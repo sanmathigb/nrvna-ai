@@ -1,0 +1,58 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Compiled objects
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Executables
+*.exe
+nrvnad
+wrk
+flw
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Testing outputs
+test_results/
+*.xml
+coverage/
+
+# Temporary files
+*.tmp
+*.log
+.cache/
+
+# Model files (can be large)
+*.gguf
+*.bin
+models/
+
+# Workspace directories (contain user data)
+workspace/
+data/
+*.workspace/
+*_ws/
+test_workspace/
+
+# Test artifacts
+test_template
