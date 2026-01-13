@@ -1,7 +1,7 @@
 # nrvna-ai
 
 asynchronous inference primitive. 
->> while in nrvna-ai, models get wrk. you get flw.
+> nrvna-ai. models get wrk. you get flw.
 
 ## Build
 
