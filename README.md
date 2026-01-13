@@ -1,59 +1,60 @@
 # nrvna-ai
 
-Asynchronous inference primitive.
+models get wrk. you get flw.
 
-> while in nrvna-ai, models get wrk. you get flw.
-
----
-
-## Philosophy
-
-A shot at building the missing asynchronous primitives. Building blocks for async inference. Abstracting inference as a Unix-ish tool.
-
-Work in, flow out. Submit prompts, reclaim your time, review results when ready. The shift from constant prompting to artifact review is where focus returns.
-
-Directories are state machines. Atomic renames are transactions. No database, no complexity—just files you can inspect.
-
-## This is for
-
-- Batch processing prompts while you work
-- Local LLM workflows that need to scale
-- Developers who value simplicity over features
-
-## This is not for
-
-- Interactive chat (use llama.cpp directly)
-- Cloud inference (use an API)
-- Production at scale (this is an MVP)
+Async filesystem-based job queue for LLM inference. Small building blocks, not a framework.
 
 ---
 
-## Quickstart
+## Why
+
+Async primitives for model inference don't exist. We have entire ecosystems built on synchronous APIs. nrvna-ai is an attempt to build the async equivalents — small, simple, Unix tool-like. Ready to use, or build on top of.
+
+---
+
+## Usage
+
+### Single Model
 
 ```bash
-# Build
-git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai && mkdir build && cd build && cmake .. && make -j4
-
-# Run
-./nrvnad model.gguf ./workspace 4    # start server
-./wrk ./workspace "your prompt"       # submit work
-./flw ./workspace <job_id>            # get result
+./nrvnad model.gguf ./workspace 4
+./wrk ./workspace "What is 2+2?"
+./flw ./workspace <job-id>
 ```
 
-## How it works
+### Multiple Models, Multiple Intents
 
-```
-input/ready/ → processing/ → output/
+```bash
+# Terminal 1: Writing assistant
+./nrvnad mistral.gguf ./writing_workspace 4
+
+# Terminal 2: Learning companion
+./nrvnad phi3.gguf ./learning_workspace 2
+
+# Submit to whichever intent you need
+./wrk ./writing_workspace "Write a blog post"
+./wrk ./learning_workspace "Explain this code"
 ```
 
-Jobs are directories. State is location. No polling, no callbacks.
+---
 
 ## Requirements
 
 - C++17, CMake 3.14+
 - macOS (Metal) or Linux
-- GGUF model
+- GGUF model file
+
+---
+
+## Build
+
+```bash
+git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
+cd nrvna-ai && mkdir build && cd build
+cmake .. && make -j4
+```
+
+---
 
 ## License
 
