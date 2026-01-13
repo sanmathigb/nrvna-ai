@@ -1,45 +1,55 @@
 # nrvna-ai
 
-asynchronous inference primitive. 
-> nrvna-ai. models get wrk. you get flw.
+Asynchronous inference primitive.
 
-## Build
+> while in nrvna-ai, models get wrk. you get flw.
+
+---
+
+## Philosophy
+
+Inference shouldn't block your workflow. Submit prompts, do other work, collect results when ready. Directories are state machines. Atomic renames are transactions. No database, no complexity.
+
+## This is for
+
+- Batch processing prompts while you work
+- Local LLM workflows that need to scale
+- Developers who value simplicity over features
+
+## This is not for
+
+- Interactive chat (use llama.cpp directly)
+- Cloud inference (use an API)
+- Production at scale (this is an MVP)
+
+---
+
+## Quickstart
 
 ```bash
+# Build
 git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai && mkdir build && cd build
-cmake .. && make -j4
-```
+cd nrvna-ai && mkdir build && cd build && cmake .. && make -j4
 
-## Use
-
-```bash
-# 1. Start server
-./nrvnad model.gguf ./workspace 4
-
-# 2. Submit work
-./wrk ./workspace "What is 2+2?"
-# → 1736700000_12345_0
-
-# 3. Get result
-./flw ./workspace 1736700000_12345_0
-# → The answer is 4.
+# Run
+./nrvnad model.gguf ./workspace 4    # start server
+./wrk ./workspace "your prompt"       # submit work
+./flw ./workspace <job_id>            # get result
 ```
 
 ## How it works
 
-Jobs flow through directories:
 ```
 input/ready/ → processing/ → output/
 ```
 
-State = location. Atomic renames = thread safety. No database.
+Jobs are directories. State is location. No polling, no callbacks.
 
 ## Requirements
 
 - C++17, CMake 3.14+
 - macOS (Metal) or Linux
-- GGUF model file
+- GGUF model
 
 ## License
 
