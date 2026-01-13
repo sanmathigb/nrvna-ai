@@ -8,7 +8,11 @@ Asynchronous inference primitive.
 
 ## Philosophy
 
-Inference shouldn't block your workflow. Submit prompts, do other work, collect results when ready. Directories are state machines. Atomic renames are transactions. No database, no complexity.
+A shot at building the missing asynchronous primitives. Building blocks for async inference. Abstracting inference as a Unix-ish tool.
+
+Work in, flow out. Submit prompts, reclaim your time, review results when ready. The shift from constant prompting to artifact review is where focus returns.
+
+Directories are state machines. Atomic renames are transactions. No database, no complexity—just files you can inspect.
 
 ## This is for
 
