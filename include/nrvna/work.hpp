@@ -46,8 +46,8 @@ private:
     std::size_t maxBytes_ = 10'000'000; // 10MB
 
     [[nodiscard]] bool createWorkspace(bool createIfMissing) noexcept;
-    [[nodiscard]] static JobId generateId() noexcept;
-    [[nodiscard]] static bool isValidPrompt(const std::string& prompt) noexcept;
+    [[nodiscard]] static JobId generateId();
+    [[nodiscard]] bool isValidPrompt(const std::string& prompt) const noexcept;
     
     [[nodiscard]] bool createJobDirectory(const JobId& jobId) const noexcept;
     [[nodiscard]] bool writePromptFile(const JobId& jobId, const std::string& prompt) const noexcept;

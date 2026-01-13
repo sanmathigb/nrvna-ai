@@ -43,7 +43,7 @@ public:
 private:
     std::filesystem::path workspace_;
     
-    [[nodiscard]] std::string readResultContent(const JobId& id) const noexcept;
+    [[nodiscard]] std::string readResultContent(const JobId& id) const;
 };
 
 }

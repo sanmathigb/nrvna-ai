@@ -21,7 +21,6 @@ static LogLevel g_level = LogLevel::INFO;
 static std::mutex g_log_mutex;
 static bool g_level_initialized = false;
 static std::unordered_map<std::thread::id, std::string> g_thread_names;
-static int g_thread_counter = 0;
 
 void Logger::setLevel(LogLevel level) noexcept {
     std::lock_guard<std::mutex> lock(g_log_mutex);

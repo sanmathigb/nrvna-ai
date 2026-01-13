@@ -32,8 +32,8 @@ public:
 
 private:
     [[nodiscard]] bool createWorkspace() noexcept;
+    [[nodiscard]] bool recoverOrphanedJobs() noexcept;
     void scanLoop();
-    static void handleSignal(int signal);
 
     std::string modelPath_;
     std::filesystem::path workspace_;
