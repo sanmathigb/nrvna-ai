@@ -7,6 +7,9 @@
 #include "nrvna/flow.hpp"
 #include "nrvna/logger.hpp"
 #include <iostream>
+#include <thread>
+#include <chrono>
+#include <unistd.h>
 
 using namespace nrvnaai;
 
@@ -42,20 +45,51 @@ int main(int argc, char* argv[]) {
     // Silence logs for CLI tool usage
     Logger::setLevel(LogLevel::WARN);
 
-    if (argc < 2 || argc > 3) {
+    if (argc < 2) {
         printUsage(argv[0]);
         return 1;
     }
 
     std::string workspace = argv[1];
     std::string jobId = "";
+    bool wait = false;
     
-    if (argc == 3) {
-        jobId = argv[2];
+    // Parse args
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-w" || arg == "--wait") {
+            wait = true;
+        } else {
+            jobId = arg;
+        }
+    }
+
+    // Check piped input for JobID if not provided
+    if (jobId.empty() && !isatty(fileno(stdin))) {
+        std::cin >> jobId;
     }
 
     try {
         Flow flow(workspace);
+
+        // Resolve ID (Specific or Latest)
+        if (jobId.empty()) {
+             auto latest = flow.latest();
+             if (latest) jobId = latest->id;
+             else {
+                 std::cerr << "No jobs found" << std::endl;
+                 return 1;
+             }
+        }
+
+        // Wait loop
+        if (wait) {
+            while (true) {
+                Status s = flow.status(jobId);
+                if (s == Status::Done || s == Status::Failed) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
 
         if (!jobId.empty()) {
             // Retrieve specific job
@@ -81,27 +115,8 @@ int main(int argc, char* argv[]) {
             }
 
         } else {
-            // Retrieve latest job
-            auto job = flow.latest();
-            
-            if (!job.has_value()) {
-                std::cerr << "No jobs found" << std::endl;
-                return 1;
-            }
-
-            if (job->status == Status::Done) {
-                std::cout << job->content << std::endl;
-                return 0;
-            } else if (job->status == Status::Failed) {
-                std::cerr << "Latest job failed: " << job->id << std::endl;
-                if (!job->content.empty()) {
-                    std::cerr << "Error: " << job->content << std::endl;
-                }
-                return 1;
-            } else {
-                std::cerr << "Latest job not ready: " << job->id << " (status: " << statusToString(job->status) << ")" << std::endl;
-                return 2; // Different exit code for "not ready"
-            }
+            // Should be unreachable now given logic above
+            return 1; 
         }
 
     } catch (const std::exception& e) {

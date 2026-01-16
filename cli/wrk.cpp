@@ -8,6 +8,8 @@
 #include "nrvna/logger.hpp"
 #include <iostream>
 #include <sstream>
+#include <iterator>
+#include <unistd.h>
 
 using namespace nrvnaai;
 
@@ -29,21 +31,42 @@ int main(int argc, char* argv[]) {
     // Silence logs for CLI tool usage (only errors/warnings)
     Logger::setLevel(LogLevel::WARN);
 
-    if (argc < 2 || argc > 3) {
+    if (argc < 2) {
         printUsage(argv[0]);
         return 1;
     }
 
     std::string workspace = argv[1];
+    std::string prompt;
 
-    // Combine all arguments after workspace into a single prompt
-    std::ostringstream promptStream;
-    for (int i = 2; i < argc; ++i) {
-        if (i > 2) promptStream << " ";
-        promptStream << argv[i];
+    // Check for stdin input
+    bool readStdin = false;
+    if (argc == 2 && !isatty(fileno(stdin))) {
+        readStdin = true;
+    } else if (argc >= 3 && std::string(argv[2]) == "-") {
+        readStdin = true;
     }
-    
-    std::string prompt = promptStream.str();
+
+    if (readStdin) {
+        prompt.assign((std::istreambuf_iterator<char>(std::cin)),
+                       std::istreambuf_iterator<char>());
+        // Remove strictly trailing newline if prompt is just a one-liner
+        if (!prompt.empty() && prompt.back() == '\n') {
+            prompt.pop_back();
+        }
+    } else {
+        if (argc < 3) {
+            printUsage(argv[0]);
+            return 1;
+        }
+
+        std::ostringstream promptStream;
+        for (int i = 2; i < argc; ++i) {
+            if (i > 2) promptStream << " ";
+            promptStream << argv[i];
+        }
+        prompt = promptStream.str();
+    }
 
     if (prompt.empty()) {
         std::cerr << "Error: Empty prompt provided\n";

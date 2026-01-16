@@ -12,6 +12,7 @@
 #include "nrvna/logger.hpp"
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 
 namespace nrvnaai {
 
@@ -179,18 +180,38 @@ void Server::scanLoop() {
     LOG_DEBUG("Scanner loop started");
 
     const auto scanInterval = std::chrono::milliseconds(1000);
+    std::unordered_set<JobId> submittedJobs;  // Track jobs already submitted
 
     while (!shutdown_.load()) {
         try {
             auto jobs = scanner_->scan();
+            int newCount = 0;
 
             for (const auto& jobId : jobs) {
                 if (shutdown_.load()) break;
-                pool_->submit(jobId);
+
+                // Only submit jobs we haven't seen before
+                if (submittedJobs.find(jobId) == submittedJobs.end()) {
+                    pool_->submit(jobId);
+                    submittedJobs.insert(jobId);
+                    newCount++;
+                }
             }
 
-            if (!jobs.empty()) {
-                LOG_DEBUG("Submitted " + std::to_string(jobs.size()) + " jobs to pool");
+            if (newCount > 0) {
+                LOG_DEBUG("Submitted " + std::to_string(newCount) + " new jobs to pool");
+            }
+
+            // Periodically clean up old entries (jobs no longer in ready/)
+            if (submittedJobs.size() > 1000) {
+                std::unordered_set<JobId> currentJobs(jobs.begin(), jobs.end());
+                for (auto it = submittedJobs.begin(); it != submittedJobs.end(); ) {
+                    if (currentJobs.find(*it) == currentJobs.end()) {
+                        it = submittedJobs.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
             }
 
             auto sleepEnd = std::chrono::steady_clock::now() + scanInterval;

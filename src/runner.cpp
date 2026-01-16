@@ -94,7 +94,7 @@ RunResult Runner::run(const std::string& prompt) {
     
     try {
         // Get config from environment variables
-        const int n_predict = env_int("NRVNA_PREDICT", 768);
+        const int n_predict = env_int("NRVNA_PREDICT", 1024);
         const int n_ctx = env_int("NRVNA_CTX", 0); // 0 = auto-size
         const float temp = env_float("NRVNA_TEMP", 0.8f);        // llama.cpp default
         const int top_k = env_int("NRVNA_TOP_K", 40);            // llama.cpp default
