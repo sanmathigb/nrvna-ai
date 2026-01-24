@@ -7,7 +7,34 @@
 #include "nrvna/processor.hpp"
 #include "nrvna/runner.hpp"
 #include "nrvna/logger.hpp"
+#include <atomic>
+#include <chrono>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+
+namespace {
+std::mutex g_output_mutex;
+std::atomic<int> g_running{0};
+std::atomic<int> g_done{0};
+std::atomic<int> g_failed{0};
+
+std::string timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    char buf[16];
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&time));
+    return buf;
+}
+
+std::string stats() {
+    return "running:" + std::to_string(g_running.load()) +
+           "  done:" + std::to_string(g_done.load()) +
+           "  failed:" + std::to_string(g_failed.load());
+}
+}
 
 namespace nrvnaai {
 
@@ -29,15 +56,34 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             return ProcessResult::NotFound;
         }
 
+        ++g_running;
+        {
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[33mrunning\033[0m  \033[90m" << stats() << "\033[0m\n" << std::flush;
+        }
+        auto startTime = std::chrono::steady_clock::now();
+
         // Step 2: Read prompt
         std::string prompt = readPrompt(jobId);
         if (prompt.empty()) {
+            --g_running;
+            ++g_failed;
+            {
+                std::lock_guard<std::mutex> lock(g_output_mutex);
+                std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  empty prompt  \033[90m" << stats() << "\033[0m\n" << std::flush;
+            }
             (void)finalizeFailure(jobId, "Failed to read prompt file");
             return ProcessResult::Failed;
         }
 
         // Step 3: Run inference
         if (!runner) {
+            --g_running;
+            ++g_failed;
+            {
+                std::lock_guard<std::mutex> lock(g_output_mutex);
+                std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  no runner  \033[90m" << stats() << "\033[0m\n" << std::flush;
+            }
             (void)finalizeFailure(jobId, "No runner available");
             return ProcessResult::SystemError;
         }
@@ -47,15 +93,29 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
         // Step 4: Finalize based on result
         if (result.ok) {
             if (finalizeSuccess(jobId, result.output)) {
-                LOG_INFO("✅ JOB COMPLETED: " + jobId + " → " + std::to_string(result.output.size()) + " chars");
+                --g_running;
+                ++g_done;
+                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                {
+                    std::lock_guard<std::mutex> lock(g_output_mutex);
+                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s  \033[90m" << stats() << "\033[0m\n" << std::flush;
+                }
+                LOG_INFO("JOB COMPLETED: " + jobId + " -> " + std::to_string(result.output.size()) + " chars");
                 return ProcessResult::Success;
             } else {
                 LOG_ERROR("Failed to finalize successful job: " + jobId);
                 return ProcessResult::SystemError;
             }
         } else {
+            --g_running;
+            ++g_failed;
+            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+            {
+                std::lock_guard<std::mutex> lock(g_output_mutex);
+                std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s  \033[90m" << stats() << "\033[0m\n" << std::flush;
+            }
             (void)finalizeFailure(jobId, result.error);
-            LOG_WARN("❌ Job failed during inference: " + jobId + " - " + result.error);
+            LOG_WARN("Job failed during inference: " + jobId + " - " + result.error);
             return ProcessResult::Failed;
         }
         

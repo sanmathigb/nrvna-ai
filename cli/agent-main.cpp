@@ -1,6 +1,7 @@
 // agent-main.cpp — Minimal autonomous agent with dynamic n_predict via env
 // Safest, simplest, no regressions.
 
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -12,6 +13,25 @@
 #include "nrvna/work.hpp"
 
 namespace fs = std::filesystem;
+
+constexpr const char* VERSION = "0.1.0";
+
+void printUsage(const char* progName) {
+    std::cout << "nrvna-ai Autonomous Agent v" << VERSION << "\n\n";
+    std::cout << "Usage: " << progName << " <workspace> <goal> [iterations]\n";
+    std::cout << "       " << progName << " --help | --version\n\n";
+    std::cout << "Arguments:\n";
+    std::cout << "  workspace    Directory for job storage (shared with nrvnad)\n";
+    std::cout << "  goal         The goal for the agent to accomplish\n";
+    std::cout << "  iterations   Number of agent iterations (default: 4)\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  -h, --help     Show this help message\n";
+    std::cout << "  -v, --version  Show version\n\n";
+    std::cout << "Examples:\n";
+    std::cout << "  " << progName << " ./workspace \"Write a hello world program\"\n";
+    std::cout << "  " << progName << " ./workspace \"Explain quantum computing\" 6\n\n";
+    std::cout << "Note: Requires nrvnad to be running on the same workspace.\n";
+}
 
 std::string readfile(const fs::path& p) {
     std::ifstream f(p);
@@ -90,8 +110,20 @@ int token_budget_for_step(int step, int total) {
 
 // ----------------------------- Main --------------------------
 int main(int argc, char* argv[]) {
+    // Handle --help and --version before anything else
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
+            printUsage(argv[0]);
+            return 0;
+        }
+        if (std::strcmp(argv[i], "-v") == 0 || std::strcmp(argv[i], "--version") == 0) {
+            std::cout << VERSION << "\n";
+            return 0;
+        }
+    }
+
     if (argc < 3) {
-        std::cout << "Usage: ./agent <workspace> \"goal\" [iterations]\n";
+        printUsage(argv[0]);
         return 1;
     }
 

@@ -71,12 +71,9 @@ void Logger::log(LogLevel level, const std::string& message) noexcept {
         ss << " " << message;
 
         {
+            // All logs go to stderr - keep stdout pure for UI
             std::lock_guard<std::mutex> lock(g_log_mutex);
-            if (level == LogLevel::ERROR) {
-                std::cerr << ss.str() << std::endl;
-            } else {
-                std::cout << ss.str() << std::endl;
-            }
+            std::cerr << ss.str() << std::endl;
         }
     } catch (...) {
         // Never throw from logging - would cause infinite loops

@@ -13,21 +13,29 @@
 
 using namespace nrvnaai;
 
+constexpr const char* VERSION = "0.1.0";
+
 void printUsage(const char* progName) {
-    std::cout << "nrvna-ai Flow Retrieval Tool\n\n";
-    std::cout << "Usage: " << progName << " <workspace> [job_id]\n\n";
+    std::cout << "nrvna-ai Flow Retrieval Tool v" << VERSION << "\n\n";
+    std::cout << "Usage: " << progName << " <workspace> [options] [job_id]\n";
+    std::cout << "       " << progName << " --help | --version\n\n";
     std::cout << "Arguments:\n";
     std::cout << "  workspace     Directory for job storage\n";
     std::cout << "  job_id        Specific job ID to retrieve (optional)\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  -w, --wait    Wait for job to complete before returning\n";
+    std::cout << "  -h, --help    Show this help message\n";
+    std::cout << "  -v, --version Show version\n\n";
     std::cout << "Behavior:\n";
     std::cout << "  - If job_id provided: retrieve specific job\n";
-    std::cout << "  - If no job_id: retrieve latest completed job\n\n";
+    std::cout << "  - If no job_id: retrieve latest completed job\n";
+    std::cout << "  - Can read job_id from stdin for piping\n\n";
     std::cout << "Environment Variables:\n";
     std::cout << "  NRVNA_LOG_LEVEL    Log level (ERROR, WARN, INFO, DEBUG, TRACE)\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << progName << " ./workspace\n";
-    std::cout << "  " << progName << " ./workspace 1731808123456_12345_0\n";
-    std::cout << "  NRVNA_LOG_LEVEL=DEBUG " << progName << " ./workspace\n";
+    std::cout << "  " << progName << " ./workspace -w abc123\n";
+    std::cout << "  wrk ./workspace \"Hello\" | " << progName << " ./workspace -w\n";
 }
 
 const char* statusToString(Status status) {
@@ -44,6 +52,19 @@ const char* statusToString(Status status) {
 int main(int argc, char* argv[]) {
     // Silence logs for CLI tool usage
     Logger::setLevel(LogLevel::WARN);
+
+    // Handle --help and --version before anything else
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            printUsage(argv[0]);
+            return 0;
+        }
+        if (arg == "-v" || arg == "--version") {
+            std::cout << VERSION << "\n";
+            return 0;
+        }
+    }
 
     if (argc < 2) {
         printUsage(argv[0]);

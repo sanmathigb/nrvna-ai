@@ -1,0 +1,51 @@
+#!/bin/bash
+# nrvna-ai convenience wrapper: submit and wait for result
+# Sugar for: wrk $WS "$@" | flw $WS -w
+#
+# This is a training wheels command - use wrk + flw for async power!
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+WRK="${PROJECT_DIR}/build/wrk"
+FLW="${PROJECT_DIR}/build/flw"
+WS="${NRVNA_WORKSPACE:-${PROJECT_DIR}/workspace}"
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "nrvna-ai Quick Ask (convenience wrapper)"
+    echo ""
+    echo "Usage: $0 <prompt>"
+    echo ""
+    echo "This command submits a job and waits for the result."
+    echo "For async power, use wrk + flw directly:"
+    echo ""
+    echo "  wrk ./workspace \"prompt\"    # Returns job ID immediately"
+    echo "  flw ./workspace -w <job-id>  # Wait for result"
+    echo ""
+    echo "Environment:"
+    echo "  NRVNA_WORKSPACE    Workspace directory (default: ./workspace)"
+    exit 0
+fi
+
+if [ -z "$1" ]; then
+    echo "Error: Prompt required"
+    echo "Usage: $0 \"your prompt here\""
+    exit 1
+fi
+
+if [ ! -x "$WRK" ] || [ ! -x "$FLW" ]; then
+    echo "Error: Build nrvna-ai first: cd build && cmake .. && make"
+    exit 1
+fi
+
+# Submit job, capture ID (stderr has friendly message, stdout has ID)
+JOB_ID=$("$WRK" "$WS" "$@" 2>/dev/null)
+
+if [ -z "$JOB_ID" ]; then
+    echo "Error: Failed to submit job"
+    exit 1
+fi
+
+# Wait and print result
+"$FLW" "$WS" -w "$JOB_ID"

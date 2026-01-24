@@ -1,0 +1,60 @@
+#!/bin/bash
+# refine - self-improving agent
+# Usage: ./bin/refine <workspace> "<goal>" [iterations]
+
+set -e
+
+WS="${1:?Usage: refine <workspace> <goal> [iterations]}"
+GOAL="${2:?Usage: refine <workspace> <goal> [iterations]}"
+ITERS="${3:-3}"
+
+# Find binaries
+BIN="$(dirname "$0")/../build"
+WRK="$BIN/wrk"
+FLW="$BIN/flw"
+
+DRAFT=""
+CRITIQUE=""
+
+for i in $(seq 1 "$ITERS"); do
+    echo "=== Iteration $i/$ITERS ===" >&2
+
+    # Build prompt
+    if [ -z "$DRAFT" ]; then
+        PROMPT="$GOAL"
+    else
+        PROMPT="Goal: $GOAL
+
+Previous draft:
+$DRAFT
+
+Feedback:
+$CRITIQUE
+
+Write an improved version addressing the feedback."
+    fi
+
+    # Generate draft
+    echo "[Generate]" >&2
+    JOB_ID=$(echo "$PROMPT" | "$WRK" "$WS" -)
+    DRAFT=$("$FLW" "$WS" "$JOB_ID" -w)
+
+    echo "$DRAFT" >&2
+    echo "" >&2
+
+    # Critique (skip on last iteration)
+    if [ "$i" -lt "$ITERS" ]; then
+        echo "[Critique]" >&2
+        CRIT_PROMPT="Review this draft critically. What's weak? What could be better? Be specific.
+
+$DRAFT"
+        CRIT_JOB=$(echo "$CRIT_PROMPT" | "$WRK" "$WS" -)
+        CRITIQUE=$("$FLW" "$WS" "$CRIT_JOB" -w)
+
+        echo "$CRITIQUE" >&2
+        echo "" >&2
+    fi
+done
+
+echo "=== Final Output ===" >&2
+echo "$DRAFT"

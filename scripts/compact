@@ -1,0 +1,61 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR/../build"
+
+WS="$1"
+BATCH="${2:-2}"
+
+[ -z "$WS" ] && { echo "Usage: compact <workspace> [batch]"; exit 1; }
+
+# Validate workspace
+if [ ! -d "$WS" ]; then
+    echo "Error: Workspace not found: $WS"
+    exit 1
+fi
+
+WS="$(cd "$WS" && pwd)"
+mkdir -p "$WS/digests"
+
+# Validate binaries
+if [ ! -x "$BUILD_DIR/wrk" ] || [ ! -x "$BUILD_DIR/flw" ]; then
+    echo "Error: Build required. Run: cd build && cmake .. && make"
+    exit 1
+fi
+
+# Collect outputs
+PROMPT="Summarize the following texts into a brief factual summary. No preamble, just the summary:"
+COUNT=0
+for dir in "$WS/output"/*/; do
+    [ -f "$dir/result.txt" ] || continue
+    COUNT=$((COUNT + 1))
+    CONTENT=$(head -c 300 "$dir/result.txt")
+    PROMPT="$PROMPT Text $COUNT: $CONTENT."
+    [ "$COUNT" -ge "$BATCH" ] && break
+done
+
+[ "$COUNT" -eq 0 ] && { echo "No outputs to compact"; exit 0; }
+
+echo "[compact] Summarizing $COUNT outputs..."
+
+# Submit job
+JOB=$(echo "$PROMPT" | "$BUILD_DIR/wrk" "$WS" -)
+if [ -z "$JOB" ]; then
+    echo "Error: Failed to submit job"
+    exit 1
+fi
+
+# Wait for result
+DIGEST=$("$BUILD_DIR/flw" "$WS" "$JOB" -w)
+if [ -z "$DIGEST" ]; then
+    echo "Error: Failed to get result for job: $JOB"
+    exit 1
+fi
+
+OUTFILE="$WS/digests/digest_$(date +%s).txt"
+echo "$DIGEST" > "$OUTFILE"
+
+echo "[compact] Created: $OUTFILE"
+echo "--- Content ---"
+cat "$OUTFILE"

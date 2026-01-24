@@ -1,0 +1,156 @@
+#!/bin/bash
+# nrvna-ai model download helper
+# Downloads curated models from Hugging Face
+
+set -e
+
+MODELS_DIR="${NRVNA_MODELS:-./models}"
+
+# Get model URL by name
+get_url() {
+    case "$1" in
+        qwen2.5-7b)
+            echo "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf"
+            ;;
+        qwen2.5-coder-3b)
+            echo "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
+            ;;
+        llama-3.2-3b)
+            echo "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+            ;;
+        phi-3-mini)
+            echo "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
+            ;;
+        deepseek-r1-7b)
+            echo "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Get model size by name
+get_size() {
+    case "$1" in
+        qwen2.5-7b)       echo "4.4GB" ;;
+        qwen2.5-coder-3b) echo "2.1GB" ;;
+        llama-3.2-3b)     echo "1.9GB" ;;
+        phi-3-mini)       echo "2.2GB" ;;
+        deepseek-r1-7b)   echo "4.4GB" ;;
+        *)                echo "?" ;;
+    esac
+}
+
+usage() {
+    echo "nrvna-ai Model Helper"
+    echo ""
+    echo "Usage: $0 <command> [model-name]"
+    echo ""
+    echo "Commands:"
+    echo "  list              Show available models"
+    echo "  pull <name>       Download a model"
+    echo "  info <name>       Show model details"
+    echo ""
+    echo "Examples:"
+    echo "  $0 list"
+    echo "  $0 pull qwen2.5-7b"
+    echo "  $0 info llama-3.2-3b"
+}
+
+list_models() {
+    echo "Models (in $MODELS_DIR):"
+    echo ""
+    if [ -d "$MODELS_DIR" ]; then
+        local found=0
+        for f in "$MODELS_DIR"/*.gguf; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            # Skip mmproj files
+            echo "$name" | grep -qi "mmproj" && continue
+            size=$(du -h "$f" | cut -f1)
+            printf "  %-45s %s\n" "$name" "$size"
+            found=1
+        done
+        if [ "$found" -eq 0 ]; then
+            echo "  (none)"
+        fi
+    else
+        echo "  (none - create $MODELS_DIR and add .gguf files)"
+    fi
+}
+
+pull_model() {
+    local name="$1"
+    local url
+    url=$(get_url "$name")
+
+    if [ -z "$url" ]; then
+        echo "Error: Unknown model '$name'"
+        echo "Run '$0 list' to see available models"
+        exit 1
+    fi
+
+    mkdir -p "$MODELS_DIR"
+    local filename
+    filename=$(basename "$url")
+    local dest="$MODELS_DIR/$filename"
+
+    if [ -f "$dest" ]; then
+        echo "Model already exists: $dest"
+        exit 0
+    fi
+
+    echo "Downloading $name ($(get_size "$name"))..."
+    echo "URL: $url"
+    echo "Destination: $dest"
+    echo ""
+
+    curl -L --progress-bar -o "$dest" "$url"
+
+    echo ""
+    echo "Downloaded: $dest"
+}
+
+info_model() {
+    local name="$1"
+    local url
+    url=$(get_url "$name")
+
+    if [ -z "$url" ]; then
+        echo "Error: Unknown model '$name'"
+        exit 1
+    fi
+
+    echo "Model: $name"
+    echo "Size: $(get_size "$name")"
+    echo "URL: $url"
+}
+
+case "${1:-}" in
+    list)
+        list_models
+        ;;
+    pull)
+        if [ -z "${2:-}" ]; then
+            echo "Error: Model name required"
+            echo "Usage: $0 pull <model-name>"
+            exit 1
+        fi
+        pull_model "$2"
+        ;;
+    info)
+        if [ -z "${2:-}" ]; then
+            echo "Error: Model name required"
+            exit 1
+        fi
+        info_model "$2"
+        ;;
+    -h|--help)
+        usage
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

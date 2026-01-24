@@ -1,0 +1,19 @@
+#!/bin/bash
+# watch - Event-driven result watcher using fswatch
+# Usage: ./watch <workspace>
+
+WS="${1:?Usage: watch <workspace>}"
+
+mkdir -p "$WS/output"
+
+echo "[watch] Listening for results in $WS/output..."
+echo "Tasks submitted in other terminals will appear here instantly."
+
+fswatch -0 --event Created "$WS/output" | while read -d '' path; do
+    [[ "$path" == */result.txt ]] && {
+        JOB=$(dirname "$path" | xargs basename)
+        echo "[DONE] $JOB"
+        cat "$path"
+        echo "---"
+    }
+done

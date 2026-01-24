@@ -13,23 +13,44 @@
 
 using namespace nrvnaai;
 
+constexpr const char* VERSION = "0.1.0";
+
 void printUsage(const char* progName) {
-    std::cout << "nrvna-ai Work Submission Tool\n\n";
-    std::cout << "Usage: " << progName << " <workspace> <prompt...>\n\n";
+    std::cout << "nrvna-ai Work Submission Tool v" << VERSION << "\n\n";
+    std::cout << "Usage: " << progName << " <workspace> <prompt...>\n";
+    std::cout << "       " << progName << " <workspace> -     (read prompt from stdin)\n";
+    std::cout << "       " << progName << " --help | --version\n\n";
     std::cout << "Arguments:\n";
     std::cout << "  workspace     Directory for job storage\n";
-    std::cout << "  prompt        Text prompt for inference (can be multiple words)\n\n";
+    std::cout << "  prompt        Text prompt for inference (can be multiple words)\n";
+    std::cout << "  -             Read prompt from stdin\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  -h, --help    Show this help message\n";
+    std::cout << "  -v, --version Show version\n\n";
     std::cout << "Environment Variables:\n";
     std::cout << "  NRVNA_LOG_LEVEL    Log level (ERROR, WARN, INFO, DEBUG, TRACE)\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << progName << " ./workspace \"What is the capital of France?\"\n";
     std::cout << "  " << progName << " ./workspace Write a hello world program\n";
-    std::cout << "  NRVNA_LOG_LEVEL=DEBUG " << progName << " ./workspace \"Debug this code\"\n";
+    std::cout << "  echo \"Hello\" | " << progName << " ./workspace -\n";
 }
 
 int main(int argc, char* argv[]) {
     // Silence logs for CLI tool usage (only errors/warnings)
     Logger::setLevel(LogLevel::WARN);
+
+    // Handle --help and --version before anything else
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            printUsage(argv[0]);
+            return 0;
+        }
+        if (arg == "-v" || arg == "--version") {
+            std::cout << VERSION << "\n";
+            return 0;
+        }
+    }
 
     if (argc < 2) {
         printUsage(argv[0]);
@@ -79,7 +100,9 @@ int main(int argc, char* argv[]) {
         auto result = work.submit(prompt);
 
         if (result.ok) {
-            // Output just the job ID for easy scripting
+            // Friendly confirmation to stderr, job ID to stdout for piping
+            std::cerr << "Job submitted: " << result.id << "\n";
+            std::cerr << "Run: flw " << workspace << " -w " << result.id << "\n";
             std::cout << result.id << std::endl;
             return 0;
         } else {

@@ -4,12 +4,15 @@ project(nrvna_ai LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Build options
+option(BUILD_AGENTS "Build agent executables" ON)
+
 # Find required packages
 find_package(Threads REQUIRED)
 
 # Add llama.cpp submodule
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(LLAMA_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/llama.cpp)
 
@@ -47,10 +50,11 @@ target_link_libraries(wrk nrvna_core)
 add_executable(flw cli/flw.cpp)
 target_link_libraries(flw nrvna_core)
 
-# Agent - autonomous ReAct loop
-add_executable(agent cli/agent-main.cpp)
-target_link_libraries(agent nrvna_core)
+# Optional: Agent executables
+if(BUILD_AGENTS)
+    add_executable(agent cli/agent-main.cpp)
+    target_link_libraries(agent nrvna_core)
 
-# Agent with tools - bash execution, web, search
-add_executable(agent-tools cli/agent-tools.cpp)
-target_link_libraries(agent-tools nrvna_core)
+    add_executable(agent-tools cli/agent-tools.cpp)
+    target_link_libraries(agent-tools nrvna_core)
+endif()
