@@ -179,7 +179,7 @@ bool Server::recoverOrphanedJobs() noexcept {
 void Server::scanLoop() {
     LOG_DEBUG("Scanner loop started");
 
-    const auto scanInterval = std::chrono::milliseconds(1000);
+    const auto scanInterval = std::chrono::seconds(5);
     std::unordered_set<JobId> submittedJobs;  // Track jobs already submitted
 
     while (!shutdown_.load()) {

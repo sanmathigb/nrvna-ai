@@ -7,6 +7,7 @@
 #include "nrvna/server.hpp"
 #include "nrvna/logger.hpp"
 #include <iostream>
+#include <iomanip>
 #include <chrono>
 #include <thread>
 #include <csignal>
@@ -48,19 +49,52 @@ void printUsage(const char* progName) {
     (void)progName;
     printBanner();
 
-    std::cout << "  \033[1mUsage:\033[0m nrvnad <model> <workspace> [workers]\n";
-    std::cout << "         nrvnad --help | --version\n\n";
-    std::cout << "  \033[1mArguments:\033[0m\n";
-    std::cout << "    model       Path to .gguf or model name (e.g., mistral, qwen)\n";
-    std::cout << "    workspace   Directory for job storage\n";
-    std::cout << "    workers     Number of worker threads (default: 4, max: 64)\n\n";
-    std::cout << "  \033[1mOptions:\033[0m\n";
-    std::cout << "    -h, --help     Show this help message\n";
-    std::cout << "    -v, --version  Show version\n\n";
+    // Check for available models
+    std::filesystem::path modelsDir = std::filesystem::current_path() / "models";
+    std::vector<std::pair<std::string, uintmax_t>> models;
+
+    if (std::filesystem::exists(modelsDir)) {
+        for (const auto& entry : std::filesystem::directory_iterator(modelsDir)) {
+            if (!entry.is_regular_file()) continue;
+            const auto& path = entry.path();
+            if (path.extension() != ".gguf") continue;
+            std::string filename = path.filename().string();
+            // Skip mmproj files (vision adapters)
+            if (filename.find("mmproj") != std::string::npos) continue;
+            models.emplace_back(filename, entry.file_size());
+        }
+        std::sort(models.begin(), models.end());
+    }
+
+    if (models.empty()) {
+        std::cout << "  \033[33mNo model found in ./models/\033[0m\n\n";
+        std::cout << "  Need a GGUF model (llama.cpp format).\n\n";
+        std::cout << "  \033[1mOptions:\033[0m\n";
+        std::cout << "    1. Point to existing:  nrvnad /path/to/model.gguf ./workspace\n";
+        std::cout << "    2. Download starter:   ./scripts/models pull llama\n\n";
+        std::cout << "  \033[90mRecommended: llama-3.2-3b (1.9GB, text-only, fast)\033[0m\n\n";
+    } else {
+        std::cout << "  \033[1mModels available:\033[0m\n";
+        constexpr size_t maxDisplay = 6;
+        size_t displayed = 0;
+        for (const auto& [name, size] : models) {
+            if (displayed >= maxDisplay) {
+                std::cout << "    \033[90m... and " << (models.size() - maxDisplay) << " more\033[0m\n";
+                break;
+            }
+            double sizeGb = static_cast<double>(size) / (1024.0 * 1024.0 * 1024.0);
+            std::cout << "    " << name << " \033[90m(" << std::fixed << std::setprecision(1) << sizeGb << "GB)\033[0m\n";
+            ++displayed;
+        }
+        std::cout << "\n";
+    }
+
+    std::cout << "  \033[1mUsage:\033[0m nrvnad <model> <workspace>\n\n";
     std::cout << "  \033[1mWorkflow:\033[0m\n";
-    std::cout << "    1. Start daemon:  nrvnad mistral ./workspace\n";
-    std::cout << "    2. Submit prompt: wrk ./workspace \"Hello\"\n";
-    std::cout << "    3. Get result:    flw ./workspace -w <job_id>\n\n";
+    std::cout << "    1. Start daemon:    nrvnad model.gguf ./workspace\n";
+    std::cout << "    2. Submit input:    wrk ./workspace \"prompt\"\n";
+    std::cout << "    3. Retrieve output: flw ./workspace <job_id>\n\n";
+    std::cout << "  \033[90mDefaults to 4 workers. Override: nrvnad <model> <workspace> <workers>\033[0m\n\n";
 }
 
 std::string toLower(std::string value) {
