@@ -25,6 +25,9 @@ flw
 *~
 .DS_Store
 
+# AI assistant configuration (local only)
+CLAUDE.md
+
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
