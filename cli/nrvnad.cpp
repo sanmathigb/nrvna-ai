@@ -278,7 +278,7 @@ int main(int argc, char* argv[]) {
         std::cout << "    \033[1mWorkspace\033[0m  " << workspace << "\n";
         std::cout << "\n";
         std::cout << "    \033[90mSubmit\033[0m  wrk " << workspace << " \"prompt\"\n";
-        std::cout << "    \033[90mResult\033[0m  flw " << workspace << " -w <job-id>\n";
+        std::cout << "    \033[90mResult\033[0m  flw " << workspace << " <job-id>\n";
         std::cout << "\n";
         std::cout << "    \033[90m────────────────────────────────────────────────────────────\033[0m\n";
         std::cout << "\n";

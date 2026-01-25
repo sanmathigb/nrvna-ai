@@ -22,6 +22,12 @@ Async primitives for model inference don't exist. We have entire ecosystems buil
 ./flw ./workspace <job-id>
 ```
 
+You can also pass a model name when a matching `.gguf` exists in `./models`:
+
+```bash
+./nrvnad mistral ./workspace 4
+```
+
 ### Multiple Models, Multiple Intents
 
 ```bash
