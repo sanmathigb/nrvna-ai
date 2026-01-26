@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <thread>
 #include <algorithm>
+#include <regex>
 
 namespace nrvnaai {
 
@@ -22,6 +23,15 @@ std::mutex Runner::model_mutex_;
 static int env_int(const char* name, int defv) {
     if (const char* v = std::getenv(name)) return std::atoi(v);
     return defv;
+}
+
+// Strip <think>...</think> blocks from reasoning models (DeepSeek-R1, QwQ, etc.)
+static std::string stripThinkBlocks(const std::string& text) {
+    static const std::regex thinkRegex("<think>[\\s\\S]*?</think>\\s*");
+    std::string result = std::regex_replace(text, thinkRegex, "");
+    // Trim leading whitespace left behind
+    size_t start = result.find_first_not_of(" \t\n\r");
+    return (start == std::string::npos) ? "" : result.substr(start);
 }
 
 // Helper: Get float from env with default
@@ -98,23 +108,26 @@ RunResult Runner::run(const std::string& prompt) {
     }
     
     try {
-        // Get config from environment variables
-        const int n_predict = env_int("NRVNA_PREDICT", 1024);
-        const int n_ctx = env_int("NRVNA_CTX", 0); // 0 = auto-size
-        const float temp = env_float("NRVNA_TEMP", 0.8f);        // llama.cpp default
-        const int top_k = env_int("NRVNA_TOP_K", 40);            // llama.cpp default
-        const float top_p = env_float("NRVNA_TOP_P", 0.95f);     // llama.cpp default
-        const float min_p = env_float("NRVNA_MIN_P", 0.05f);     // llama.cpp default
-        const float repeat_penalty = env_float("NRVNA_REPEAT_PENALTY", 1.0f);  // llama.cpp default (OFF)
+        // Get model's native context size
+        const int n_ctx_train = llama_model_n_ctx_train(shared_model_.get());
+
+        // Sampling parameters (Ollama-compatible defaults)
+        const float temp = env_float("NRVNA_TEMP", 0.8f);
+        const int top_k = env_int("NRVNA_TOP_K", 40);
+        const float top_p = env_float("NRVNA_TOP_P", 0.9f);
+        const float min_p = env_float("NRVNA_MIN_P", 0.05f);
+        const float repeat_penalty = env_float("NRVNA_REPEAT_PENALTY", 1.1f);
         const int repeat_last_n = env_int("NRVNA_REPEAT_LAST_N", 64);
         const uint32_t seed = env_int("NRVNA_SEED", 0);
-        
-        // Log generation settings
-        LOG_INFO("Generation settings: n_predict=" + std::to_string(n_predict) + 
-                 " n_ctx=" + std::to_string(n_ctx) + 
-                 " temp=" + std::to_string(temp) + 
-                 " top_p=" + std::to_string(top_p) + 
-                 " min_p=" + std::to_string(min_p));
+
+        // Generation limits - generous defaults, model stops at EOS naturally
+        // Use model's context size, cap at 8192 for memory on older machines
+        const int max_ctx = std::min(n_ctx_train, env_int("NRVNA_MAX_CTX", 8192));
+        const int n_predict = env_int("NRVNA_PREDICT", max_ctx / 2);  // half context for response
+
+        LOG_INFO("Model context: " + std::to_string(n_ctx_train) +
+                 ", using max_ctx=" + std::to_string(max_ctx) +
+                 ", n_predict=" + std::to_string(n_predict));
         
         // Format prompt
         std::string formatted_prompt = formatPrompt(prompt);
@@ -131,10 +144,10 @@ RunResult Runner::run(const std::string& prompt) {
             return {false, "", "Failed to tokenize the prompt"};
         }
 
-        // Create context
+        // Create context sized for prompt + response, capped at model's limit
         llama_context_params ctx_params = llama_context_default_params();
-        ctx_params.n_ctx = n_ctx > 0 ? n_ctx : (n_prompt + n_predict + 1);
-        ctx_params.n_batch = n_prompt;
+        ctx_params.n_ctx = std::min(n_prompt + n_predict + 64, max_ctx);
+        ctx_params.n_batch = std::min(n_prompt, 512);  // reasonable batch size
         ctx_params.no_perf = false;
 
         context_ = llama_init_from_model(shared_model_.get(), ctx_params);
@@ -228,6 +241,7 @@ RunResult Runner::run(const std::string& prompt) {
         context_ = nullptr;
         
         LOG_INFO("Generated " + std::to_string(output.size()) + " bytes");
+        output = stripThinkBlocks(output);
         return {true, output, ""};
         
     } catch (const std::exception& e) {

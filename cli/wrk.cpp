@@ -100,9 +100,7 @@ int main(int argc, char* argv[]) {
         auto result = work.submit(prompt);
 
         if (result.ok) {
-            // Friendly confirmation to stderr, job ID to stdout for piping
-            std::cerr << "Job submitted: " << result.id << "\n";
-            std::cerr << "Run: flw " << workspace << " " << result.id << "\n";
+            // Just the job ID - clean for piping, no noise
             std::cout << result.id << std::endl;
             return 0;
         } else {
