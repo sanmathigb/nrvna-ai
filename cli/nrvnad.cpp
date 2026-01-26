@@ -14,12 +14,14 @@
 #include <csignal>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <unistd.h>
 
 using namespace nrvnaai;
 
@@ -63,6 +65,29 @@ bool isWorkspace(const std::filesystem::path& dir) {
            std::filesystem::exists(dir / "output");
 }
 
+std::optional<pid_t> readPidFile(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    if (!file) {
+        return std::nullopt;
+    }
+    long pid = 0;
+    file >> pid;
+    if (pid <= 0) {
+        return std::nullopt;
+    }
+    return static_cast<pid_t>(pid);
+}
+
+bool isProcessAlive(pid_t pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    if (::kill(pid, 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+}
+
 std::vector<WorkspaceInfo> scanWorkspaces() {
     std::vector<WorkspaceInfo> workspaces;
     auto cwd = std::filesystem::current_path();
@@ -78,6 +103,14 @@ std::vector<WorkspaceInfo> scanWorkspaces() {
         ws.processing = countDirEntries(entry.path() / "processing");
         ws.done = countDirEntries(entry.path() / "output");
         ws.failed = countDirEntries(entry.path() / "failed");
+
+        auto pidPath = entry.path() / ".nrvnad.pid";
+        if (auto pid = readPidFile(pidPath)) {
+            if (!isProcessAlive(*pid)) {
+                std::error_code ec;
+                std::filesystem::remove(pidPath, ec);
+            }
+        }
 
         // Read model if available
         std::ifstream mf(entry.path() / ".model");
@@ -134,9 +167,57 @@ std::vector<ModelInfo> scanModels() {
     return models;
 }
 
+void printModelList(const std::vector<ModelInfo>& models, size_t maxDisplay, bool showAll) {
+    size_t displayed = 0;
+    for (const auto& m : models) {
+        if (!showAll && displayed >= maxDisplay) {
+            break;
+        }
+        double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
+        std::cout << "    \033[36m" << std::left << std::setw(12) << m.shortName << "\033[0m"
+                  << std::setw(40) << m.filename
+                  << "\033[90m" << std::fixed << std::setprecision(1) << gb << " GB\033[0m\n";
+        ++displayed;
+    }
+
+    if (!showAll && models.size() > maxDisplay) {
+        std::cout << "    \033[90m+" << (models.size() - maxDisplay) << " more\033[0m\n";
+    }
+}
+
+std::optional<std::string> latestJobId(const std::filesystem::path& workspace) {
+    std::optional<std::string> latest;
+    std::optional<std::filesystem::file_time_type> latestTime;
+
+    auto scanDir = [&](const std::filesystem::path& dir) {
+        if (!std::filesystem::exists(dir)) {
+            return;
+        }
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+            auto ts = std::filesystem::last_write_time(entry);
+            if (!latestTime || ts > *latestTime) {
+                latestTime = ts;
+                latest = entry.path().filename().string();
+            }
+        }
+    };
+
+    scanDir(workspace / "output");
+    scanDir(workspace / "failed");
+    return latest;
+}
+
 struct DashboardResult {
     std::vector<WorkspaceInfo> selectable;  // All non-running workspaces (for interactive start)
     std::vector<ModelInfo> models;
+};
+
+struct DaemonSelection {
+    std::string modelPath;
+    std::string workspace;
 };
 
 DashboardResult printDashboard() {
@@ -147,7 +228,8 @@ DashboardResult printDashboard() {
     std::vector<WorkspaceInfo> running, selectable;
     for (const auto& ws : workspaces) {
         if (ws.model.empty()) continue;
-        if (ws.processing > 0) {
+        auto pidPath = std::filesystem::path(ws.path) / ".nrvnad.pid";
+        if (auto pid = readPidFile(pidPath); pid && isProcessAlive(*pid)) {
             running.push_back(ws);
         } else {
             selectable.push_back(ws);
@@ -168,7 +250,13 @@ DashboardResult printDashboard() {
     // Running workspaces (daemon active)
     if (!running.empty()) {
         std::cout << "  \033[1mRUNNING\033[0m  \033[90mdaemon processing\033[0m\n\n";
+        constexpr size_t maxDisplay = 6;
+        size_t displayed = 0;
         for (const auto& ws : running) {
+            if (displayed >= maxDisplay) {
+                std::cout << "    \033[90m+" << (running.size() - maxDisplay) << " more\033[0m\n";
+                break;
+            }
             std::string displayPath = ws.path;
             if (displayPath.size() > 16) displayPath = displayPath.substr(0, 13) + "...";
             std::cout << "    \033[36m" << std::left << std::setw(20) << displayPath << "\033[0m  ";
@@ -176,6 +264,7 @@ DashboardResult printDashboard() {
             std::cout << "\033[32m" << ws.processing << " processing\033[0m";
             if (ws.queued > 0) std::cout << "  \033[33m" << ws.queued << " queued\033[0m";
             std::cout << "\n";
+            ++displayed;
         }
         std::cout << "\n";
     }
@@ -213,19 +302,8 @@ DashboardResult printDashboard() {
     // Models
     if (!models.empty()) {
         std::cout << "  \033[1mMODELS\033[0m  \033[90m./models/\033[0m\n\n";
-        constexpr size_t maxDisplay = 4;
-        size_t displayed = 0;
-        for (const auto& m : models) {
-            if (displayed >= maxDisplay) {
-                std::cout << "    \033[90m+" << (models.size() - maxDisplay) << " more\033[0m\n";
-                break;
-            }
-            double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
-            std::cout << "    \033[36m" << std::left << std::setw(12) << m.shortName << "\033[0m"
-                      << std::setw(40) << m.filename
-                      << "\033[90m" << std::fixed << std::setprecision(1) << gb << " GB\033[0m\n";
-            ++displayed;
-        }
+        constexpr size_t maxDisplay = 6;
+        printModelList(models, maxDisplay, false);
         std::cout << "\n";
     } else {
         std::cout << "  \033[1mMODELS\033[0m  \033[90m./models/\033[0m\n\n";
@@ -244,27 +322,50 @@ DashboardResult printDashboard() {
     return {selectable, models};
 }
 
-int promptAndStartDaemon(const std::vector<WorkspaceInfo>& pending, int& workers) {
-    if (pending.empty()) return -1;
+std::string trim(std::string value);
 
-    std::cout << "  \033[90mStart daemon? [1";
-    if (pending.size() > 1) std::cout << "-" << pending.size();
-    std::cout << "] or Enter to quit:\033[0m ";
+std::optional<std::pair<std::string, std::string>> promptForNewWorkspace(
+    const std::vector<ModelInfo>& models,
+    int& workers
+);
+
+std::optional<DaemonSelection> promptAndStartDaemon(const std::vector<WorkspaceInfo>& pending,
+                                                    const std::vector<ModelInfo>& models,
+                                                    int& workers) {
+    if (pending.empty()) return std::nullopt;
+
+    std::cout << "  \033[90mStart daemon\033[0m\n";
+    std::cout << "    \033[90m[1-N] = resume workspace\033[0m\n";
+    std::cout << "    \033[90mn = new workspace\033[0m\n";
+    std::cout << "    \033[90mEnter = quit\033[0m\n";
+    std::cout << "  \033[90mChoice:\033[0m ";
     std::cout.flush();
 
     std::string input;
-    if (!std::getline(std::cin, input) || input.empty() || input == "n" || input == "N") {
-        return -1;
+    if (!std::getline(std::cin, input)) {
+        return std::nullopt;
+    }
+    input = trim(input);
+    if (input.empty()) {
+        return std::nullopt;
+    }
+
+    if (input == "n" || input == "N" || input == "new") {
+        auto selection = promptForNewWorkspace(models, workers);
+        if (!selection) {
+            return std::nullopt;
+        }
+        return DaemonSelection{selection->first, selection->second};
     }
 
     int choice = -1;
     try {
         choice = std::stoi(input);
         if (choice < 1 || choice > static_cast<int>(pending.size())) {
-            return -1;
+            return std::nullopt;
         }
     } catch (...) {
-        return -1;
+        return std::nullopt;
     }
 
     const auto& ws = pending[choice - 1];
@@ -280,13 +381,129 @@ int promptAndStartDaemon(const std::vector<WorkspaceInfo>& pending, int& workers
         } catch (...) {}
     }
 
-    return choice - 1;
+    return DaemonSelection{ws.model, ws.path};
+}
+
+std::optional<std::pair<std::string, std::string>> promptForNewWorkspace(
+    const std::vector<ModelInfo>& models,
+    int& workers
+) {
+    bool showAll = false;
+    while (true) {
+        std::cout << "  \033[90mPick model\033[0m\n";
+        std::cout << "    \033[90m[1-N] = listed model\033[0m\n";
+        std::cout << "    \033[90mm = show all models\033[0m\n";
+        std::cout << "    \033[90mp = model path\033[0m\n";
+        std::cout << "    \033[90mEnter = quit\033[0m\n";
+        std::cout << "  \033[90mChoice:\033[0m ";
+        std::cout.flush();
+
+        std::string input;
+        if (!std::getline(std::cin, input)) {
+            return std::nullopt;
+        }
+        input = trim(input);
+        if (input.empty()) {
+            return std::nullopt;
+        }
+
+        if (input == "m" || input == "M" || input == "more") {
+            showAll = true;
+            std::cout << "\n";
+            printModelList(models, models.size(), true);
+            std::cout << "\n";
+            continue;
+        }
+
+        if (input == "p" || input == "P" || input == "path") {
+            std::cout << "  \033[90mModel path (.gguf):\033[0m ";
+            std::cout.flush();
+            std::string pathInput;
+            if (!std::getline(std::cin, pathInput)) {
+                return std::nullopt;
+            }
+            pathInput = trim(pathInput);
+            if (pathInput.empty()) {
+                return std::nullopt;
+            }
+            if (!std::filesystem::exists(std::filesystem::path(pathInput))) {
+                std::cout << "  \033[31mModel not found\033[0m\n";
+                return std::nullopt;
+            }
+
+            std::cout << "  \033[90mWorkspace [./workspace]:\033[0m ";
+            std::cout.flush();
+
+            std::string workspace;
+            if (std::getline(std::cin, workspace)) {
+                if (workspace.empty()) {
+                    workspace = "./workspace";
+                }
+            }
+
+            std::cout << "  \033[90mWorkers [4]:\033[0m ";
+            std::cout.flush();
+
+            std::string workerInput;
+            if (std::getline(std::cin, workerInput) && !workerInput.empty()) {
+                try {
+                    int w = std::stoi(workerInput);
+                    if (w >= 1 && w <= 64) workers = w;
+                } catch (...) {}
+            }
+
+            return std::make_pair(pathInput, workspace);
+        }
+
+        int choice = -1;
+        try {
+            choice = std::stoi(input);
+            if (choice < 1 || choice > static_cast<int>(models.size())) {
+                return std::nullopt;
+            }
+        } catch (...) {
+            return std::nullopt;
+        }
+
+        const auto& model = models[choice - 1];
+        std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
+        std::cout << "  \033[90mWorkspace [./workspace]:\033[0m ";
+        std::cout.flush();
+
+        std::string workspace;
+        if (std::getline(std::cin, workspace)) {
+            if (workspace.empty()) {
+                workspace = "./workspace";
+            }
+        }
+
+        std::cout << "  \033[90mWorkers [4]:\033[0m ";
+        std::cout.flush();
+
+        std::string workerInput;
+        if (std::getline(std::cin, workerInput) && !workerInput.empty()) {
+            try {
+                int w = std::stoi(workerInput);
+                if (w >= 1 && w <= 64) workers = w;
+            } catch (...) {}
+        }
+
+        auto modelPath = (std::filesystem::current_path() / "models" / model.filename).string();
+        return std::make_pair(modelPath, workspace);
+    }
 }
 
 std::string toLower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
+    return value;
+}
+
+std::string trim(std::string value) {
+    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
     return value;
 }
 
@@ -333,36 +550,6 @@ std::optional<std::filesystem::path> resolveModelPath(const std::string& modelAr
     return matches.front();
 }
 
-std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath) {
-    std::filesystem::path dir = modelPath.parent_path();
-    if (dir.empty() || !std::filesystem::exists(dir)) {
-        return std::nullopt;
-    }
-
-    std::string stem = toLower(modelPath.stem().string());
-    std::vector<std::filesystem::path> matches;
-
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        const auto& path = entry.path();
-        if (path.extension() != ".gguf") {
-            continue;
-        }
-        std::string filename = toLower(path.filename().string());
-        if (containsToken(filename, "mmproj") && (stem.empty() || containsToken(filename, stem))) {
-            matches.push_back(path);
-        }
-    }
-
-    if (matches.empty()) {
-        return std::nullopt;
-    }
-
-    std::sort(matches.begin(), matches.end());
-    return matches.front();
-}
 
 void applyDefaultEnv(const char* key,
                      const std::string& value,
@@ -378,42 +565,20 @@ void applyDefaultEnv(const char* key,
 void applyModelDefaults(const std::filesystem::path& modelPath) {
     std::string filename = toLower(modelPath.filename().string());
     std::unordered_set<std::string> lockedKeys;
-    const std::vector<const char*> keys = {
-        "NRVNA_TEMP",
-        "NRVNA_TOP_P",
-        "NRVNA_TOP_K",
-        "NRVNA_PREDICT",
-        "NRVNA_REPEAT_PENALTY",
-        "NRVNA_REPEAT_LAST_N"
-    };
 
-    for (const auto* key : keys) {
-        if (std::getenv(key)) {
-            lockedKeys.insert(key);
-        }
-    }
+    // Check which keys user has already set
+    if (std::getenv("NRVNA_TEMP")) lockedKeys.insert("NRVNA_TEMP");
 
     std::unordered_map<std::string, std::string> applied;
 
-    applyDefaultEnv("NRVNA_TEMP", "0.7", lockedKeys, applied);
-    applyDefaultEnv("NRVNA_TOP_P", "0.9", lockedKeys, applied);
-    applyDefaultEnv("NRVNA_TOP_K", "40", lockedKeys, applied);
-    applyDefaultEnv("NRVNA_PREDICT", "512", lockedKeys, applied);
-    applyDefaultEnv("NRVNA_REPEAT_PENALTY", "1.1", lockedKeys, applied);
-    applyDefaultEnv("NRVNA_REPEAT_LAST_N", "64", lockedKeys, applied);
-
+    // Sampling defaults - let runner.cpp use model-aware defaults
+    // Only override temperature for specific model types
     if (containsToken(filename, "coder") || containsToken(filename, "code")) {
-        applyDefaultEnv("NRVNA_TEMP", "0.3", lockedKeys, applied);
-        applyDefaultEnv("NRVNA_PREDICT", "256", lockedKeys, applied);
+        applyDefaultEnv("NRVNA_TEMP", "0.3", lockedKeys, applied);  // more deterministic for code
+    } else if (containsToken(filename, "deepseek") || containsToken(filename, "r1")) {
+        applyDefaultEnv("NRVNA_TEMP", "0.6", lockedKeys, applied);  // reasoning models
     }
-
-    if (containsToken(filename, "deepseek") || containsToken(filename, "r1")) {
-        applyDefaultEnv("NRVNA_TEMP", "0.4", lockedKeys, applied);
-    }
-
-    if (containsToken(filename, "3b") || containsToken(filename, "500m") || containsToken(filename, "mini")) {
-        applyDefaultEnv("NRVNA_PREDICT", "256", lockedKeys, applied);
-    }
+    // No artificial n_predict limits - runner.cpp uses model's context size
 
     if (!applied.empty()) {
         LOG_INFO("Applied default params: " + std::to_string(applied.size()));
@@ -451,14 +616,19 @@ int main(int argc, char* argv[]) {
         auto result = printDashboard();
 
         if (!result.selectable.empty()) {
-            int choice = promptAndStartDaemon(result.selectable, workers);
-            if (choice >= 0) {
-                const auto& ws = result.selectable[choice];
-                modelPath = ws.model;
-                workspace = ws.path;
-            } else {
+            auto selection = promptAndStartDaemon(result.selectable, result.models, workers);
+            if (!selection) {
                 return 0;
             }
+            modelPath = selection->modelPath;
+            workspace = selection->workspace;
+        } else if (!result.models.empty()) {
+            auto selection = promptForNewWorkspace(result.models, workers);
+            if (!selection) {
+                return 0;
+            }
+            modelPath = selection->first;
+            workspace = selection->second;
         } else {
             return 0;
         }
@@ -515,6 +685,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        std::filesystem::path pidPath = std::filesystem::path(workspace) / ".nrvnad.pid";
+        {
+            std::ofstream pf(pidPath);
+            if (pf) {
+                pf << getpid();
+            }
+        }
+
         // Write model info to workspace for dashboard
         {
             std::ofstream mf(workspace + "/.model");
@@ -529,8 +707,16 @@ int main(int argc, char* argv[]) {
         std::cout << "\n";
         std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
         std::cout << "\n";
+        auto latest = latestJobId(std::filesystem::path(workspace));
         std::cout << "  \033[90mSubmit:\033[0m  wrk " << workspace << " \"prompt\"\n";
-        std::cout << "  \033[90mResults:\033[0m flw " << workspace << "\n";
+        std::cout << "  \033[90mResults:\033[0m flw " << workspace;
+        if (latest) {
+            std::cout << " " << *latest;
+        }
+        std::cout << "\n";
+        if (latest) {
+            std::cout << "  \033[90mLatest job:\033[0m " << *latest << "\n";
+        }
         std::cout << "\n";
         std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
         std::cout << "\n";
@@ -543,6 +729,10 @@ int main(int argc, char* argv[]) {
             std::cout << "\nShutdown requested, stopping server..." << std::endl;
         }
         LOG_DEBUG("Shutdown requested, stopping server...");
+        {
+            std::error_code ec;
+            std::filesystem::remove(pidPath, ec);
+        }
         server->shutdown();
 
     } catch (const std::exception& e) {
