@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Build options
-option(BUILD_AGENTS "Build agent executables" ON)
+option(BUILD_AGENTS "Build experimental agent executables" OFF)
 
 # Find required packages
 find_package(Threads REQUIRED)
@@ -50,11 +50,11 @@ target_link_libraries(wrk nrvna_core)
 add_executable(flw cli/flw.cpp)
 target_link_libraries(flw nrvna_core)
 
-# Optional: Agent executables
+# Optional: Experimental agent executables (enable with -DBUILD_AGENTS=ON)
 if(BUILD_AGENTS)
-    add_executable(agent cli/agent-main.cpp)
+    add_executable(agent agents/agent-main.cpp)
     target_link_libraries(agent nrvna_core)
 
-    add_executable(agent-tools cli/agent-tools.cpp)
+    add_executable(agent-tools agents/agent-tools.cpp)
     target_link_libraries(agent-tools nrvna_core)
 endif()
