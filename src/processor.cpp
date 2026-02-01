@@ -9,6 +9,7 @@
 #include "nrvna/logger.hpp"
 #include <chrono>
 #include <ctime>
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -30,8 +31,13 @@ std::string timestamp() {
 namespace nrvnaai {
 
 Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath)
-    : workspace_(workspace), modelPath_(modelPath) {
+    : workspace_(workspace), modelPath_(modelPath), mmprojPath_("") {
     LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_);
+}
+
+Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath)
+    : workspace_(workspace), modelPath_(modelPath), mmprojPath_(mmprojPath) {
+    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_ + " and mmproj: " + mmprojPath_);
 }
 
 ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
@@ -74,8 +80,46 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             return ProcessResult::SystemError;
         }
 
-        RunResult result = runner->run(prompt);
-        
+        // Check job type for routing
+        std::string jobType = readJobType(jobId);
+
+        if (jobType == "embed") {
+            // Embedding job
+            auto embedResult = runner->embed(prompt);
+            if (embedResult.ok) {
+                if (finalizeEmbedding(jobId, embedResult.embedding)) {
+                    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                    {
+                        std::lock_guard<std::mutex> lock(g_output_mutex);
+                        std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
+                    }
+                    LOG_INFO("EMBED COMPLETED: " + jobId + " -> " + std::to_string(embedResult.embedding.size()) + " dims");
+                    return ProcessResult::Success;
+                } else {
+                    LOG_ERROR("Failed to finalize embedding job: " + jobId);
+                    return ProcessResult::SystemError;
+                }
+            } else {
+                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                {
+                    std::lock_guard<std::mutex> lock(g_output_mutex);
+                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
+                }
+                (void)finalizeFailure(jobId, embedResult.error);
+                LOG_WARN("Embed job failed: " + jobId + " - " + embedResult.error);
+                return ProcessResult::Failed;
+            }
+        }
+
+        // Text or vision job
+        std::vector<std::filesystem::path> imagePaths = readImages(jobId);
+        RunResult result;
+        if (imagePaths.empty()) {
+            result = runner->run(prompt);
+        } else {
+            result = runner->run(prompt, imagePaths);
+        }
+
         // Step 4: Finalize based on result
         if (result.ok) {
             if (finalizeSuccess(jobId, result.output)) {
@@ -171,6 +215,46 @@ bool Processor::finalizeSuccess(const JobId& jobId, const std::string& result) n
     }
 }
 
+bool Processor::finalizeEmbedding(const JobId& jobId, const std::vector<float>& embedding) noexcept {
+    try {
+        auto processingPath = getJobPath("processing", jobId);
+        auto outputPath = getJobPath("output", jobId);
+
+        // Write embedding as JSON
+        auto tempPath = processingPath / "embedding.json.tmp";
+        {
+            std::ofstream file(tempPath, std::ios::binary);
+            if (!file) return false;
+
+            file << "{\n  \"dim\": " << embedding.size() << ",\n  \"vector\": [";
+            for (size_t i = 0; i < embedding.size(); ++i) {
+                if (i > 0) file << ", ";
+                if (i % 10 == 0 && i > 0) file << "\n    ";
+                file << embedding[i];
+            }
+            file << "\n  ]\n}\n";
+            file.flush();
+            if (!file.good()) return false;
+        }
+
+        // Rename temp to final
+        auto finalPath = processingPath / "embedding.json";
+        std::filesystem::rename(tempPath, finalPath);
+
+        // Atomic move to output
+        std::filesystem::rename(processingPath, outputPath);
+
+        LOG_DEBUG("Embedding job finalized: " + jobId);
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to finalize embedding for job " + jobId + ": " + std::string(e.what()));
+        return false;
+    } catch (...) {
+        LOG_ERROR("Unknown error finalizing embedding for job: " + jobId);
+        return false;
+    }
+}
+
 bool Processor::finalizeFailure(const JobId& jobId, const std::string& error) noexcept {
     try {
         auto processingPath = getJobPath("processing", jobId);
@@ -198,6 +282,49 @@ bool Processor::finalizeFailure(const JobId& jobId, const std::string& error) no
     } catch (...) {
         LOG_ERROR("Unknown error finalizing failure for job: " + jobId);
         return false;
+    }
+}
+
+std::vector<std::filesystem::path> Processor::readImages(const JobId& jobId) const noexcept {
+    std::vector<std::filesystem::path> imagePaths;
+    try {
+        auto imagesDir = getJobPath("processing", jobId) / "images";
+        if (!std::filesystem::exists(imagesDir) || !std::filesystem::is_directory(imagesDir)) {
+            return imagePaths;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(imagesDir)) {
+            // Accept regular files or symlinks (symlinks used for local files)
+            if (entry.is_regular_file() || entry.is_symlink()) {
+                imagePaths.push_back(entry.path());
+            }
+        }
+
+        std::sort(imagePaths.begin(), imagePaths.end());
+    } catch (...) {
+        return imagePaths;
+    }
+    return imagePaths;
+}
+
+std::string Processor::readJobType(const JobId& jobId) const noexcept {
+    try {
+        auto typePath = getJobPath("processing", jobId) / "type.txt";
+
+        if (!std::filesystem::exists(typePath)) {
+            return "text";  // Default to text if no type.txt
+        }
+
+        std::ifstream file(typePath, std::ios::binary);
+        if (!file) {
+            return "text";
+        }
+
+        std::string type;
+        std::getline(file, type);
+        return type.empty() ? "text" : type;
+    } catch (...) {
+        return "text";
     }
 }
 
@@ -249,7 +376,11 @@ bool Processor::initializeRunners(int numWorkers) {
     try {
         for (int i = 0; i < numWorkers; ++i) {
             LOG_DEBUG("Pre-creating Runner instance for worker " + std::to_string(i));
-            runners_[i] = std::make_unique<Runner>(modelPath_);
+            if (mmprojPath_.empty()) {
+                runners_[i] = std::make_unique<Runner>(modelPath_);
+            } else {
+                runners_[i] = std::make_unique<Runner>(modelPath_, mmprojPath_);
+            }
         }
         LOG_DEBUG("All " + std::to_string(numWorkers) + " Runner instances initialized");
         return true;

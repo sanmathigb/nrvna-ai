@@ -6,10 +6,17 @@
 #pragma once
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "nrvna/types.hpp"
 
 namespace nrvnaai {
+
+enum class JobType : uint8_t {
+    Text = 0,
+    Embed = 1,
+    Vision = 2
+};
 
 enum class SubmissionError : uint8_t {
     None = 0,
@@ -36,7 +43,8 @@ public:
     Work(Work&&) noexcept = default;
     Work& operator=(Work&&) noexcept = default;
 
-    [[nodiscard]] SubmitResult submit(const std::string& prompt);
+    [[nodiscard]] SubmitResult submit(const std::string& prompt, JobType type = JobType::Text);
+    [[nodiscard]] SubmitResult submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
 
     void setMaxSize(std::size_t maxBytes) noexcept { maxBytes_ = maxBytes; }
     [[nodiscard]] std::size_t maxSize() const noexcept { return maxBytes_; }
@@ -51,7 +59,10 @@ private:
     
     [[nodiscard]] bool createJobDirectory(const JobId& jobId) const noexcept;
     [[nodiscard]] bool writePromptFile(const JobId& jobId, const std::string& prompt) const noexcept;
+    [[nodiscard]] bool writeImageFiles(const JobId& jobId, const std::vector<std::filesystem::path>& imagePaths) const noexcept;
+    [[nodiscard]] bool writeTypeFile(const JobId& jobId, JobType type) const noexcept;
     [[nodiscard]] bool atomicPublish(const JobId& jobId) const noexcept;
+    void cleanupFailedJob(const JobId& jobId) const noexcept;
 };
 
 }

@@ -16,6 +16,9 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/llama.cpp)
 
+# Add mtmd library for multimodal support
+add_subdirectory(third_party/llama.cpp/tools/mtmd)
+
 # Core library sources
 set(NRVNA_SOURCES
     src/logger.cpp
@@ -33,9 +36,12 @@ add_library(nrvna_core STATIC ${NRVNA_SOURCES})
 target_include_directories(nrvna_core PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd
 )
 target_link_libraries(nrvna_core PUBLIC 
     llama 
+    mtmd
+    mtmd_helper
     Threads::Threads
 )
 target_compile_options(nrvna_core PRIVATE -Wall -Wextra -Wpedantic)

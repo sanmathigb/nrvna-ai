@@ -6,6 +6,7 @@
 #pragma once
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 #include "nrvna/types.hpp"
 #include <unordered_map>
@@ -25,6 +26,7 @@ enum class ProcessResult : uint8_t {
 class Processor {
 public:
     explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath);
+    explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath);
     
     Processor(const Processor&) = delete;
     Processor& operator=(const Processor&) = delete;
@@ -39,6 +41,7 @@ public:
 private:
     std::filesystem::path workspace_;
     std::string modelPath_;
+    std::string mmprojPath_;
     
     // Per-thread Runner instances for Metal compatibility
     std::unordered_map<int, std::unique_ptr<Runner>> runners_;
@@ -49,7 +52,10 @@ private:
     [[nodiscard]] bool finalizeFailure(const JobId& jobId, const std::string& error) noexcept;
     
     [[nodiscard]] std::string readPrompt(const JobId& jobId) const noexcept;
+    [[nodiscard]] std::string readJobType(const JobId& jobId) const noexcept;
+    [[nodiscard]] std::vector<std::filesystem::path> readImages(const JobId& jobId) const noexcept;
     [[nodiscard]] std::filesystem::path getJobPath(const char* phase, const JobId& jobId) const noexcept;
+    [[nodiscard]] bool finalizeEmbedding(const JobId& jobId, const std::vector<float>& embedding) noexcept;
     
     // Metal-compatible per-thread Runner management
     std::unique_ptr<Runner>& getRunnerForWorker(int workerId);

@@ -19,8 +19,15 @@ namespace nrvnaai {
 // Note: Signal handling is done by the CLI (nrvnad.cpp), not by Server class
 
 Server::Server(const std::string& modelPath, const std::filesystem::path& workspace, int workers)
-    : modelPath_(modelPath), workspace_(workspace), workers_(workers) {
+    : modelPath_(modelPath), mmprojPath_(""), workspace_(workspace), workers_(workers) {
     LOG_DEBUG("Server created - model: " + modelPath + ", workspace: " + workspace_.string() +
+              ", workers: " + std::to_string(workers));
+}
+
+Server::Server(const std::string& modelPath, const std::string& mmprojPath,
+               const std::filesystem::path& workspace, int workers)
+    : modelPath_(modelPath), mmprojPath_(mmprojPath), workspace_(workspace), workers_(workers) {
+    LOG_DEBUG("Server created - model: " + modelPath + ", mmproj: " + mmprojPath + ", workspace: " + workspace_.string() +
               ", workers: " + std::to_string(workers));
 }
 
@@ -55,6 +62,9 @@ bool Server::start() {
     LOG_DEBUG("nrvna-ai Server Starting");
     LOG_DEBUG("========================================");
     LOG_DEBUG("Model: " + modelPath_);
+    if (!mmprojPath_.empty()) {
+        LOG_DEBUG("MMProj: " + mmprojPath_);
+    }
     LOG_DEBUG("Workspace: " + workspace_.string());
     LOG_DEBUG("Workers: " + std::to_string(workers_));
     LOG_DEBUG("nrvna Log Level: " + std::string(getenv("NRVNA_LOG_LEVEL") ? getenv("NRVNA_LOG_LEVEL") : "INFO"));
@@ -65,7 +75,11 @@ bool Server::start() {
     try {
         scanner_ = std::make_unique<Scanner>(workspace_);
         pool_ = std::make_unique<Pool>(workers_);
-        processor_ = std::make_unique<Processor>(workspace_, modelPath_);
+        if (mmprojPath_.empty()) {
+            processor_ = std::make_unique<Processor>(workspace_, modelPath_);
+        } else {
+            processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_);
+        }
 
         // Pre-initialize all Runners BEFORE starting worker threads
         LOG_DEBUG("Pre-initializing " + std::to_string(workers_) + " Runner instances...");

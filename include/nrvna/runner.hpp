@@ -4,14 +4,20 @@
  * SPDX-License-Identifier: MIT
  */
 #pragma once
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <mutex>
-#include <atomic>
 
 struct llama_model;
 struct llama_context;
+struct llama_context_params;
+struct llama_sampler;
+struct mtmd_context;
+struct mtmd_bitmap;
 
 namespace nrvnaai {
 
@@ -21,30 +27,16 @@ struct RunResult {
     std::string error;
 };
 
-struct SamplingParams {
-    float temperature = 0.8f;
-    int top_k = 40;
-    float top_p = 0.95f;
-    float typical_p = 1.0f;
-    float min_p = 0.05f;
-    float repeat_penalty = 1.06f;
-    float frequency_penalty = 0.0f;
-    float presence_penalty = 0.0f;
-    int repeat_last_n = 112;
-};
-
-enum class ModelType { 
-    CODE,      // CodeLlama - needs low temp
-    CHAT,      // Chat models - standard params  
-    GENERAL,   // General models - balanced params
-    EMBEDDING, // Embedding models - generate vectors not text
-    UNKNOWN    // Fallback to safe defaults
+struct EmbedResult {
+    bool ok = false;
+    std::vector<float> embedding;
+    std::string error;
 };
 
 class Runner final {
 public:
     explicit Runner(const std::string& modelPath);
-    explicit Runner(const std::string& modelPath, const SamplingParams& params);
+    explicit Runner(const std::string& modelPath, const std::string& mmprojPath);
     ~Runner();
 
     Runner(const Runner&) = delete;
@@ -53,41 +45,46 @@ public:
     Runner& operator=(Runner&&) = delete;
 
     [[nodiscard]] RunResult run(const std::string& prompt);
+    [[nodiscard]] RunResult run(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
+    [[nodiscard]] EmbedResult embed(const std::string& text);
+    [[nodiscard]] bool isMultimodal() const noexcept { return mtmd_ctx_ != nullptr; }
 
 private:
-    // Shared model pattern for stability
+    struct SamplingConfig {
+        int n_predict = 0;
+        int max_ctx = 0;
+        float temp = 0.8f;
+        int top_k = 40;
+        float top_p = 0.9f;
+        float min_p = 0.05f;
+        float repeat_penalty = 1.1f;
+        int repeat_last_n = 64;
+        uint32_t seed = 0;
+    };
+
+    // Shared model (thread-safe), per-worker mtmd context (not thread-safe)
     static std::shared_ptr<llama_model> shared_model_;
     static std::string current_model_path_;
     static std::mutex model_mutex_;
-    static ModelType detected_model_type_;
-    static std::atomic<bool> sampler_logged_;
-    
-    // Cached model metadata
-    static std::string cached_model_name_;
-    static std::string cached_architecture_;
-    static bool cached_has_template_;
-    static uint32_t cached_context_length_;
+
+    // Per-instance mtmd context for thread-safe vision processing
+    std::shared_ptr<mtmd_context> mtmd_owned_;
+    std::string mmproj_path_;
 
     [[nodiscard]] bool initializeModel(const std::string& modelPath) noexcept;
     void cleanup() noexcept;
-    
-    // Intelligence functions from stable implementation
-    ModelType detectModelType(const std::string& modelPath);
-    SamplingParams getCodeParams();
-    SamplingParams getChatParams();
-    SamplingParams getGeneralParams();
-    int detectOptimalThreads();
-    int detectGpuLayers(const std::string& modelPath);
-    
-    // Structured logging functions
-    void logModelLoadSummary(int gpu_layers);
-    void logSamplerConfigurationOnce();
-    std::string modelTypeToString(ModelType type);
-    std::string fmtFloat(float v);
     std::string formatPrompt(const std::string& content);
+    std::string formatMultimodalPrompt(const std::string& prompt, size_t imageCount, const char* marker);
+    SamplingConfig buildSamplingConfig() const;
+    void buildContextParams(int n_prompt, const SamplingConfig& config, llama_context_params& params) const;
+    llama_sampler* buildSampler(const SamplingConfig& config) const;
+    RunResult runText(const std::string& prompt);
+    RunResult runVision(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
+    std::vector<mtmd_bitmap*> loadImages(const std::vector<std::filesystem::path>& imagePaths) const;
+    void freeBitmaps(std::vector<mtmd_bitmap*>& bitmaps) const noexcept;
 
     llama_context* context_ = nullptr;
-    SamplingParams sampling_params_;
+    mtmd_context* mtmd_ctx_ = nullptr;
 };
 
 }
