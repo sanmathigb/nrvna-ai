@@ -52,13 +52,17 @@ You can also pass a model name when a matching `.gguf` exists in `./models`:
 
 ---
 
-## Build
+## Build & Install
 
 ```bash
 git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai && mkdir build && cd build
-cmake .. && make -j4
+cd nrvna-ai
+cmake -S . -B build
+cmake --build build -j4
+cmake --install build --prefix ~/.local   # or /usr/local with sudo
 ```
+
+This drops `nrvnad`, `wrk`, and `flw` into `~/.local/bin` so you can launch them from any terminal on your PATH.
 
 ---
 

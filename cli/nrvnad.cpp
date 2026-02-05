@@ -863,16 +863,41 @@ int main(int argc, char* argv[]) {
     std::string mmprojPath;
     int workers = 4;
 
-    // Set log level based on mode:
-    // - CLI mode (with args): show INFO logs for visibility
-    // - Interactive mode: suppress logs for clean dashboard UI
-    bool cliMode = (argc >= 3);
-    Logger::setLevel(cliMode ? LogLevel::INFO : LogLevel::ERROR);
-    if (!cliMode) {
-        setenv("NRVNA_QUIET", "1", 1);  // Suppress mtmd timing logs in interactive mode
+    // Parse all flags first, collect positional args
+    std::vector<std::string> positionalArgs;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-w" || arg == "--workers") && i + 1 < argc) {
+            try {
+                workers = std::stoi(argv[++i]);
+            } catch (...) {
+                std::cerr << "Error: Invalid worker count\n";
+                return 1;
+            }
+        } else if (arg == "--mmproj" && i + 1 < argc) {
+            mmprojPath = argv[++i];
+        } else if (arg == "--workspace" && i + 1 < argc) {
+            workspace = argv[++i];
+        } else if (arg[0] != '-') {
+            positionalArgs.push_back(arg);
+        }
     }
 
-    if (argc < 3) {
+    // Extract model and workspace from positional args if not set via flags
+    if (!positionalArgs.empty() && modelPath.empty()) {
+        modelPath = positionalArgs[0];
+    }
+    if (positionalArgs.size() > 1 && workspace.empty()) {
+        workspace = positionalArgs[1];
+    }
+
+    bool cliMode = !modelPath.empty();
+    Logger::setLevel(cliMode ? LogLevel::INFO : LogLevel::ERROR);
+    if (!cliMode) {
+        setenv("NRVNA_QUIET", "1", 1);
+    }
+
+    if (!cliMode) {
         // Interactive mode - show status dashboard first
         std::cout << "\033[2J\033[1;1H";
         auto result = printDashboard();
@@ -905,31 +930,10 @@ int main(int argc, char* argv[]) {
         modelPath = selection->modelPath;
         workspace = selection->workspace;
         mmprojPath = selection->mmprojPath;
-    } else {
-        // CLI mode: nrvnad <model> <workspace> [--mmproj <path>] [-w <n>]
-        modelPath = argv[1];
-        workspace = argv[2];
-    }
-
-    for (int i = 3; i < argc; ++i) {
-        std::string arg = argv[i];
-        if ((arg == "-w" || arg == "--workers") && i + 1 < argc) {
-            try {
-                workers = std::stoi(argv[++i]);
-            } catch (...) {
-                std::cerr << "Error: Invalid worker count\n";
-                return 1;
-            }
-        } else if (arg == "--mmproj" && i + 1 < argc) {
-            mmprojPath = argv[++i];
-        } else if (isNumber(arg) && workers == 4) {
-            try {
-                workers = std::stoi(arg);
-            } catch (...) {
-                std::cerr << "Error: Invalid worker count\n";
-                return 1;
-            }
-        }
+    } else if (workspace.empty()) {
+        std::cerr << "Error: workspace required\n";
+        std::cerr << "Usage: nrvnad <model> <workspace> [--mmproj <path>] [-w <n>]\n";
+        return 1;
     }
 
     std::signal(SIGINT, signalHandler);
