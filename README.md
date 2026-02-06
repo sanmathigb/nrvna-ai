@@ -95,7 +95,7 @@ ls ./workspace/output/
 ## Requirements
 
 - C++17 compiler
-- CMake 3.14+
+- CMake 3.16+
 - macOS or Linux
 - GGUF model ([HuggingFace](https://huggingface.co/models?search=gguf))
 

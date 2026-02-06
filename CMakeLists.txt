@@ -1,11 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(nrvna_ai LANGUAGES CXX C)
+project(nrvna_ai VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Build options
-option(BUILD_AGENTS "Build experimental agent executables" OFF)
 
 # Find required packages
 find_package(Threads REQUIRED)
@@ -33,13 +30,13 @@ set(NRVNA_SOURCES
 
 # Core library
 add_library(nrvna_core STATIC ${NRVNA_SOURCES})
-target_include_directories(nrvna_core PUBLIC 
+target_include_directories(nrvna_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd
 )
-target_link_libraries(nrvna_core PUBLIC 
-    llama 
+target_link_libraries(nrvna_core PUBLIC
+    llama
     mtmd
     mtmd_helper
     Threads::Threads
@@ -56,11 +53,7 @@ target_link_libraries(wrk nrvna_core)
 add_executable(flw cli/flw.cpp)
 target_link_libraries(flw nrvna_core)
 
-# Optional: Experimental agent executables (enable with -DBUILD_AGENTS=ON)
-if(BUILD_AGENTS)
-    add_executable(agent agents/agent-main.cpp)
-    target_link_libraries(agent nrvna_core)
-
-    add_executable(agent-tools agents/agent-tools.cpp)
-    target_link_libraries(agent-tools nrvna_core)
-endif()
+# Install targets
+install(TARGETS nrvnad wrk flw
+    RUNTIME DESTINATION bin
+)
