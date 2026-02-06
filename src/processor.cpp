@@ -372,14 +372,15 @@ std::filesystem::path Processor::getJobPath(const char* phase, const JobId& jobI
 // This ensures ggml_backend_load_all() is called sequentially from main thread
 bool Processor::initializeRunners(int numWorkers) {
     std::lock_guard<std::mutex> lock(runnersMutex_);
-    
+
     try {
         for (int i = 0; i < numWorkers; ++i) {
             LOG_DEBUG("Pre-creating Runner instance for worker " + std::to_string(i));
             if (mmprojPath_.empty()) {
                 runners_[i] = std::make_unique<Runner>(modelPath_);
             } else {
-                runners_[i] = std::make_unique<Runner>(modelPath_, mmprojPath_);
+                // Pass numWorkers so each Runner divides CPU threads appropriately
+                runners_[i] = std::make_unique<Runner>(modelPath_, mmprojPath_, numWorkers);
             }
         }
         LOG_DEBUG("All " + std::to_string(numWorkers) + " Runner instances initialized");

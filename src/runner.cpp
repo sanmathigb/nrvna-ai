@@ -22,6 +22,11 @@ std::shared_ptr<llama_model> Runner::shared_model_ = nullptr;
 std::string Runner::current_model_path_ = "";
 std::mutex Runner::model_mutex_;
 
+// Vision encoding mutex - serializes mtmd_helper_eval_chunks across all workers
+// because the underlying GGML compute graph has shared state that corrupts
+// when multiple vision encodings run simultaneously
+static std::mutex vision_encoding_mutex_;
+
 // Helper: Get integer from env with default
 static int env_int(const char* name, int defv) {
     if (const char* v = std::getenv(name)) return std::atoi(v);
@@ -66,10 +71,10 @@ static void filtered_llama_log(enum ggml_log_level level, const char* text, void
     }
 }
 
-Runner::Runner(const std::string& modelPath) : Runner(modelPath, "") {
+Runner::Runner(const std::string& modelPath) : Runner(modelPath, "", 1) {
 }
 
-Runner::Runner(const std::string& modelPath, const std::string& mmprojPath)
+Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int numWorkers)
     : mmproj_path_(mmprojPath) {
     llama_log_set(filtered_llama_log, nullptr);
     ggml_backend_load_all();
@@ -101,6 +106,7 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath)
     }
 
     // Each worker gets its own mtmd context (NOT thread-safe, so per-instance)
+    // CRITICAL: Divide CPU threads among workers to prevent contention
     if (!mmprojPath.empty()) {
         LOG_INFO("Loading mmproj: " + mmprojPath);
         mtmd_context_params mparams = mtmd_context_params_default();
@@ -109,7 +115,12 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath)
         #else
             mparams.use_gpu = env_int("NRVNA_GPU_LAYERS", 0) > 0;
         #endif
-        mparams.n_threads = std::thread::hardware_concurrency();
+
+        // Divide threads among workers to prevent parallel vision corruption
+        int total_threads = std::thread::hardware_concurrency();
+        mparams.n_threads = std::max(1, total_threads / std::max(1, numWorkers));
+        LOG_INFO("Vision threads per worker: " + std::to_string(mparams.n_threads) +
+                 " (total: " + std::to_string(total_threads) + ", workers: " + std::to_string(numWorkers) + ")");
         mparams.verbosity = GGML_LOG_LEVEL_ERROR;
 
         mtmd_context* ctx = mtmd_init_from_file(mmprojPath.c_str(), shared_model_.get(), mparams);
@@ -432,15 +443,20 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
         llama_sampler* smpl = buildSampler(config);
         llama_pos n_past = 0;
 
-        // Eval multimodal chunks (text + images) - always request logits on last token
+        // CRITICAL: Serialize vision encoding across all workers
+        // The GGML compute graph has shared state that corrupts when multiple
+        // vision encodings run simultaneously, even with separate mtmd contexts
         auto encodeStart = std::chrono::steady_clock::now();
-        if (mtmd_helper_eval_chunks(mtmd_ctx_, context_, chunks, 0, 0, ctx_params.n_batch, true, &n_past) != 0) {
-            llama_sampler_free(smpl);
-            llama_free(context_);
-            context_ = nullptr;
-            mtmd_input_chunks_free(chunks);
-            freeBitmaps(bitmaps);
-            return {false, "", "Failed to eval multimodal prompt"};
+        {
+            std::lock_guard<std::mutex> vision_lock(vision_encoding_mutex_);
+            if (mtmd_helper_eval_chunks(mtmd_ctx_, context_, chunks, 0, 0, ctx_params.n_batch, true, &n_past) != 0) {
+                llama_sampler_free(smpl);
+                llama_free(context_);
+                context_ = nullptr;
+                mtmd_input_chunks_free(chunks);
+                freeBitmaps(bitmaps);
+                return {false, "", "Failed to eval multimodal prompt"};
+            }
         }
 
         mtmd_input_chunks_free(chunks);

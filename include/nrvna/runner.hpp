@@ -36,7 +36,7 @@ struct EmbedResult {
 class Runner final {
 public:
     explicit Runner(const std::string& modelPath);
-    explicit Runner(const std::string& modelPath, const std::string& mmprojPath);
+    explicit Runner(const std::string& modelPath, const std::string& mmprojPath, int numWorkers = 1);
     ~Runner();
 
     Runner(const Runner&) = delete;
