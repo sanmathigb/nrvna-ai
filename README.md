@@ -1,70 +1,111 @@
 # nrvna-ai
 
-models get wrk. you get flw.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Async filesystem-based job queue for LLM inference. Small building blocks, not a framework.
+Async inference primitives for local LLMs. Submit jobs, collect results, build pipelines.
 
----
+```
+          wrk                    nrvnad                    flw
+           │                        │                        │
+   "prompt" ──▶ input/ready/ ──▶ processing/ ──▶ output/ ──▶ result
+           │                        │                        │
+       (submit)              (workers churn)            (collect)
+```
+
+## Quick Start
+
+```bash
+# Build
+git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
+cd nrvna-ai && cmake -S . -B build && cmake --build build -j4
+
+# Start daemon (2 workers)
+./build/nrvnad ./models/your-model.gguf ./workspace 2
+
+# Submit job (returns immediately)
+JOB=$(./build/wrk ./workspace "What is 2+2?")
+
+# Collect result
+./build/flw ./workspace $JOB
+```
 
 ## Why
 
-Async primitives for model inference don't exist. We have entire ecosystems built on synchronous APIs. nrvna-ai is an attempt to build the async equivalents — small, simple, Unix tool-like. Ready to use, or build on top of.
+Every LLM API is synchronous: call, wait, return. nrvna-ai provides true async:
 
----
+- **Fire and forget** — submit jobs, come back later
+- **Batch processing** — queue hundreds of jobs, workers process in parallel
+- **Multi-model** — different models for different workspaces
+- **Vision support** — images via `--mmproj` and `--image`
+- **Composable** — build agents and pipelines with shell scripts
+- **No infrastructure** — filesystem is the queue (no Redis, no Kafka)
 
-## Usage
+## The Primitives
 
-### Single Model
+| Tool | Purpose | Example |
+|------|---------|---------|
+| `nrvnad` | Daemon: model + workspace + workers | `nrvnad model.gguf ./ws 4` |
+| `wrk` | Submit: prompt → job ID | `wrk ./ws "prompt"` |
+| `flw` | Collect: job ID → result | `flw ./ws <job-id>` |
 
-```bash
-./nrvnad model.gguf ./workspace 4
-./wrk ./workspace "What is 2+2?"
-./flw ./workspace <job-id>
+Jobs are directories. State is location. Transitions are atomic renames.
+
+```
+workspace/
+├── input/ready/    ← queued jobs
+├── processing/     ← jobs being worked
+├── output/         ← completed jobs (result.txt)
+└── failed/         ← failed jobs (error.txt)
 ```
 
-You can also pass a model name when a matching `.gguf` exists in `./models`:
+## Platform Support
+
+| Platform | Backend | Status |
+|----------|---------|--------|
+| macOS (Apple Silicon) | Metal | ✅ Full GPU acceleration |
+| macOS (Intel) | CPU | ✅ CPU only |
+| Linux | CPU / CUDA | ✅ CPU, CUDA if available |
+
+## Multi-Model / Multi-Workspace
 
 ```bash
-./nrvnad mistral ./workspace 4
+# Different models for different tasks
+nrvnad qwen-vl.gguf    ./ws-vision 2 --mmproj qwen-vl-mmproj.gguf
+nrvnad codellama.gguf  ./ws-code   4
+nrvnad phi-3-mini.gguf ./ws-fast   2
+
+# Submit to the right workspace
+wrk ./ws-vision "Describe this" --image photo.jpg
+wrk ./ws-code   "Refactor: $(cat main.py)"
+wrk ./ws-fast   "Classify: bug or feature?"
 ```
 
-### Multiple Models, Multiple Intents
+## Batch Processing
 
 ```bash
-# Terminal 1: Writing assistant
-./nrvnad mistral.gguf ./writing_workspace 4
+# Submit 100 images for captioning
+for img in photos/*.jpg; do
+  wrk ./workspace "Caption this image" --image "$img"
+done
 
-# Terminal 2: Learning companion
-./nrvnad phi3.gguf ./learning_workspace 2
-
-# Submit to whichever intent you need
-./wrk ./writing_workspace "Write a blog post"
-./wrk ./learning_workspace "Explain this code"
+# Results accumulate in output/
+ls ./workspace/output/
 ```
-
----
 
 ## Requirements
 
-- C++17, CMake 3.14+
-- macOS (Metal) or Linux
-- GGUF model file
+- C++17 compiler
+- CMake 3.14+
+- macOS or Linux
+- GGUF model ([HuggingFace](https://huggingface.co/models?search=gguf))
 
----
+## Documentation
 
-## Build & Install
-
-```bash
-git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai
-cmake -S . -B build
-cmake --build build -j4
-cmake --install build --prefix ~/.local   # or /usr/local with sudo
-```
-
-This drops `nrvnad`, `wrk`, and `flw` into `~/.local/bin` so you can launch them from any terminal on your PATH.
-
----
+| Doc | Description |
+|-----|-------------|
+| [QUICKSTART.md](QUICKSTART.md) | Get running in 5 minutes |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Internals: components, threading, state machine |
+| [ADVANCED.md](ADVANCED.md) | Patterns: batch, fan-out, loops, memory, routing |
 
 ## License
 
