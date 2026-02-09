@@ -12,28 +12,34 @@ Async inference primitives for local LLMs. Submit jobs, collect results, build p
        (submit)              (workers churn)            (collect)
 ```
 
+## Install
+
+```bash
+git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
+cd nrvna-ai
+cmake -S . -B build && cmake --build build -j4
+sudo cmake --install build
+```
+
+All dependencies are vendored — llama.cpp is built automatically as part of the build. No separate installation needed, and it won't conflict with any existing llama.cpp on your system.
+
 ## Quick Start
 
 ```bash
-# Build
-git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai && cmake -S . -B build && cmake --build build -j4
+# Interactive mode — pick a model, assign a workspace, start
+nrvnad
 
-# Place a GGUF model in ./models/
-mkdir -p models
-# Download any GGUF model from https://huggingface.co/models?search=gguf
-
-# Start daemon
-./build/nrvnad ./models/your-model.gguf workspace
+# Or start directly
+nrvnad model.gguf workspace
 
 # Submit job (returns immediately)
-JOB=$(./build/wrk workspace "What is 2+2?")
+JOB=$(wrk workspace "What is 2+2?")
 
 # Collect result
-./build/flw workspace $JOB
+flw workspace $JOB
 ```
 
-Or just run `./build/nrvnad` with no arguments for an interactive picker.
+Place GGUF models in `./models/` or set `NRVNA_MODELS_DIR`.
 
 ## Why
 
@@ -100,10 +106,9 @@ ls workspace/output/
 
 ## Requirements
 
-- C++17 compiler
-- CMake 3.16+
 - macOS or Linux
-- GGUF model ([HuggingFace](https://huggingface.co/models?search=gguf))
+- CMake 3.16+ and a C++17 compiler
+- A GGUF model ([HuggingFace](https://huggingface.co/models?search=gguf))
 
 ## Documentation
 
