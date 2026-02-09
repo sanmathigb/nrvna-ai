@@ -41,8 +41,9 @@ void printUsage(const char* progName) {
 }
 
 int main(int argc, char* argv[]) {
-    // Silence logs for CLI tool usage (only errors/warnings)
-    Logger::setLevel(LogLevel::WARN);
+    // Default to WARN for clean piping; NRVNA_LOG_LEVEL overrides
+    if (!std::getenv("NRVNA_LOG_LEVEL"))
+        Logger::setLevel(LogLevel::WARN);
 
     // Handle --help and --version before anything else
     for (int i = 1; i < argc; ++i) {

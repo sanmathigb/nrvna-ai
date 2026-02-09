@@ -172,6 +172,7 @@ wrk "$ws" "Process this: $input"
 | `NRVNA_BATCH` | `2048` | Batch size |
 | `NRVNA_GPU_LAYERS` | `99` (Mac) / `0` (other) | Layers offloaded to GPU |
 | `NRVNA_MODELS_DIR` | `./models/` | Model search path |
+| `NRVNA_LOG_LEVEL` | `info` | Logging: error, warn, info, debug, trace |
 
 ---
 

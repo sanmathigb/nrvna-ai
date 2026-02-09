@@ -19,6 +19,7 @@ enum class LogLevel : uint8_t {
 class Logger {
 public:
     static void setLevel(LogLevel level) noexcept;
+    static void initFromEnv() noexcept;
     [[nodiscard]] static LogLevel level() noexcept;
     
     static void log(LogLevel level, const std::string& message) noexcept;

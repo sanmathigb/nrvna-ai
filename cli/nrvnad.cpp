@@ -742,13 +742,12 @@ int main(int argc, char* argv[]) {
     }
 
     bool cliMode = !modelPath.empty();
-    Logger::setLevel(cliMode ? LogLevel::INFO : LogLevel::ERROR);
-    if (!cliMode) {
-        setenv("NRVNA_QUIET", "1", 1);
-    }
 
     if (!cliMode) {
-        // Interactive mode - show dashboard then go straight to selection
+        // Interactive mode: suppress logs during dashboard for clean UI
+        Logger::setLevel(LogLevel::ERROR);
+        setenv("NRVNA_QUIET", "1", 1);
+
         std::cout << "\033[2J\033[1;1H";
         auto result = printDashboard();
 
@@ -759,6 +758,9 @@ int main(int argc, char* argv[]) {
         modelPath = selection->modelPath;
         workspace = selection->workspace;
         mmprojPath = selection->mmprojPath;
+
+        // Transition to server mode: respect NRVNA_LOG_LEVEL (defaults to INFO)
+        Logger::initFromEnv();
     } else if (workspace.empty()) {
         std::cerr << "Error: workspace required\n";
         std::cerr << "Usage: nrvnad <model> <workspace> [--mmproj <path>] [-w <n>]\n";

@@ -28,6 +28,12 @@ void Logger::setLevel(LogLevel level) noexcept {
     g_level_initialized = true;
 }
 
+void Logger::initFromEnv() noexcept {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_level = parseEnvLevel();
+    g_level_initialized = true;
+}
+
 LogLevel Logger::level() noexcept {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     if (!g_level_initialized) {

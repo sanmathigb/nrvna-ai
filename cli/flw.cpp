@@ -50,8 +50,9 @@ const char* statusToString(Status status) {
 }
 
 int main(int argc, char* argv[]) {
-    // Silence logs for CLI tool usage
-    Logger::setLevel(LogLevel::WARN);
+    // Default to WARN for clean output; NRVNA_LOG_LEVEL overrides
+    if (!std::getenv("NRVNA_LOG_LEVEL"))
+        Logger::setLevel(LogLevel::WARN);
 
     // Handle --help and --version before anything else
     for (int i = 1; i < argc; ++i) {
