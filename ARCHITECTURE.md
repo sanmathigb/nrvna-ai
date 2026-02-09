@@ -171,9 +171,9 @@ LOG_TRACE("Very detailed tracing");
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `nrvnad` | Server daemon | `./nrvnad --model model.gguf --workspace ./jobs --workers 4` |
-| `wrk` | Submit jobs | `./wrk --workspace ./jobs "What is AI?"` |
-| `flw` | Query jobs | `./flw --workspace ./jobs status <job_id>` |
+| `nrvnad` | Start daemon | `nrvnad model.gguf workspace` |
+| `wrk` | Submit jobs | `wrk workspace "What is AI?"` |
+| `flw` | Collect results | `flw workspace job-id` |
 
 ## Key Design Decisions
 
@@ -186,17 +186,18 @@ LOG_TRACE("Very detailed tracing");
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `NRVNA_WORKERS` | 4 | Worker threads |
 | `NRVNA_LOG_LEVEL` | info | Log verbosity |
 | `NRVNA_GPU_LAYERS` | 99 (Mac) / 0 (other) | GPU layers for model |
-| `NRVNA_PREDICT` | 768 | Max tokens to generate |
-| `NRVNA_CTX` | 0 (auto) | Context size |
+| `NRVNA_PREDICT` | 2048 | Max tokens to generate |
+| `NRVNA_MAX_CTX` | 8192 | Context window size |
 | `NRVNA_TEMP` | 0.8 | Sampling temperature |
 | `NRVNA_TOP_K` | 40 | Top-K sampling |
-| `NRVNA_TOP_P` | 0.95 | Top-P sampling |
+| `NRVNA_TOP_P` | 0.9 | Top-P sampling |
 | `NRVNA_MIN_P` | 0.05 | Min-P sampling |
-| `NRVNA_REPEAT_PENALTY` | 1.0 | Repetition penalty |
+| `NRVNA_REPEAT_PENALTY` | 1.1 | Repetition penalty |
 | `NRVNA_SEED` | 0 | Random seed |
-| `LLAMA_LOG_LEVEL` | error | llama.cpp log level |
+| `NRVNA_MODELS_DIR` | ./models/ | Model search path |
 
 ## Thread Model
 

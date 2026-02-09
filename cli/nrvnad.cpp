@@ -289,7 +289,7 @@ std::optional<std::string> latestJobId(const std::filesystem::path& workspace) {
 }
 
 struct DashboardResult {
-    std::vector<WorkspaceInfo> selectable;  // All non-running workspaces (for interactive start)
+    std::vector<WorkspaceInfo> workspaces;  // All non-running workspaces (for interactive start)
     std::vector<ModelInfo> models;
 };
 
@@ -301,22 +301,15 @@ struct DaemonSelection {
 
 DashboardResult printDashboard() {
     auto models = scanModels();
-    auto workspaces = scanWorkspaces();
+    auto allWorkspaces = scanWorkspaces();
 
-    // Split workspaces into running and selectable (pending + completed)
-    std::vector<WorkspaceInfo> running, selectable;
-    for (const auto& ws : workspaces) {
-        if (ws.model.empty()) continue;
-        auto pidPath = std::filesystem::path(ws.path) / ".nrvnad.pid";
-        if (auto pid = readPidFile(pidPath); pid && isProcessAlive(*pid)) {
-            running.push_back(ws);
-        } else {
-            selectable.push_back(ws);
-        }
+    // Only show workspaces where daemon is not currently running
+    std::vector<WorkspaceInfo> selectable;
+    for (const auto& ws : allWorkspaces) {
+        if (!ws.daemonRunning) selectable.push_back(ws);
     }
-    // Sort selectable: pending first, then stopped, then idle (by path within each)
+    // Sort: queued jobs first, then stopped daemons, then idle
     std::sort(selectable.begin(), selectable.end(), [](const auto& a, const auto& b) {
-        // Priority: pending (queued > 0) > stopped (daemonStopped) > idle
         auto priority = [](const WorkspaceInfo& ws) {
             if (ws.queued > 0) return 0;
             if (ws.daemonStopped) return 1;
@@ -333,94 +326,24 @@ DashboardResult printDashboard() {
     std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
     std::cout << "\n";
 
-    // Running workspaces (daemon active)
-    if (!running.empty()) {
-        std::cout << "  \033[1mRUNNING\033[0m  \033[90mdaemon processing\033[0m\n\n";
-        constexpr size_t maxDisplay = 6;
-        size_t displayed = 0;
-        for (const auto& ws : running) {
-            if (displayed >= maxDisplay) {
-                std::cout << "    \033[90m+" << (running.size() - maxDisplay) << " more\033[0m\n";
-                break;
-            }
-            std::string displayPath = ws.path;
-            if (displayPath.size() > 16) displayPath = displayPath.substr(0, 13) + "...";
-            std::cout << "    \033[36m" << std::left << std::setw(20) << displayPath << "\033[0m  ";
-            std::cout << "\033[90m" << std::left << std::setw(10) << ws.model << "\033[0m  ";
-            std::cout << "\033[32m" << ws.processing << " processing\033[0m";
-            if (ws.queued > 0) std::cout << "  \033[33m" << ws.queued << " queued\033[0m";
-            std::cout << "\n";
-            ++displayed;
-        }
-        std::cout << "\n";
-    }
-
-    // Selectable workspaces (can start daemon)
-    // Split into: pending (queued jobs) vs stopped (daemon killed) vs idle
-    std::vector<WorkspaceInfo> pending, stopped, idle;
-    for (const auto& ws : selectable) {
-        if (ws.queued > 0) {
-            pending.push_back(ws);
-        } else if (ws.daemonStopped) {
-            stopped.push_back(ws);
-        } else {
-            idle.push_back(ws);
-        }
-    }
-
-    // PENDING - urgent, jobs waiting
-    if (!pending.empty()) {
-        std::cout << "  \033[1mPENDING\033[0m  \033[33mjobs queued - needs restart\033[0m\n\n";
+    // Selectable workspaces with inline status tags
+    if (!selectable.empty()) {
+        std::cout << "  \033[1mWORKSPACES\033[0m\n\n";
+        constexpr size_t maxDisplay = 8;
         int idx = 1;
-        for (const auto& ws : pending) {
-            std::string displayPath = ws.path;
-            if (displayPath.size() > 16) displayPath = displayPath.substr(0, 13) + "...";
-            std::cout << "    \033[33m[" << idx << "]\033[0m  ";
-            std::cout << "\033[36m" << std::left << std::setw(16) << displayPath << "\033[0m  ";
-            std::cout << "\033[90m" << std::left << std::setw(10) << ws.model << "\033[0m  ";
-            std::cout << "\033[33;1m" << ws.queued << " queued\033[0m";
-            if (ws.done > 0) std::cout << "  \033[32m" << ws.done << " done\033[0m";
-            if (ws.failed > 0) std::cout << "  \033[31m" << ws.failed << " failed\033[0m";
-            std::cout << "\n";
-            ++idx;
-        }
-        std::cout << "\n";
-    }
-
-    // STOPPED - daemon was killed, can resume
-    if (!stopped.empty()) {
-        std::cout << "  \033[1mSTOPPED\033[0m  \033[90mdaemon exited - can resume\033[0m\n\n";
-        int idx = static_cast<int>(pending.size()) + 1;
-        for (const auto& ws : stopped) {
-            std::string displayPath = ws.path;
-            if (displayPath.size() > 16) displayPath = displayPath.substr(0, 13) + "...";
-            std::cout << "    \033[33m[" << idx << "]\033[0m  ";
-            std::cout << "\033[36m" << std::left << std::setw(16) << displayPath << "\033[0m  ";
-            std::cout << "\033[90m" << std::left << std::setw(10) << ws.model << "\033[0m  ";
-            if (ws.done > 0) std::cout << "\033[32m" << ws.done << " done\033[0m  ";
-            if (ws.failed > 0) std::cout << "\033[31m" << ws.failed << " failed\033[0m";
-            std::cout << "\n";
-            ++idx;
-        }
-        std::cout << "\n";
-    }
-
-    // IDLE - old workspaces
-    if (!idle.empty()) {
-        std::cout << "  \033[1mWORKSPACES\033[0m  \033[90midle\033[0m\n\n";
-        constexpr size_t maxDisplay = 4;
-        int idx = static_cast<int>(pending.size() + stopped.size()) + 1;
         size_t displayed = 0;
-        for (const auto& ws : idle) {
+        for (const auto& ws : selectable) {
             if (displayed >= maxDisplay) {
-                std::cout << "    \033[90m+" << (idle.size() - maxDisplay) << " more\033[0m\n";
+                std::cout << "    \033[90m+" << (selectable.size() - maxDisplay) << " more\033[0m\n";
                 break;
             }
-            std::string displayPath = ws.path;
-            if (displayPath.size() > 16) displayPath = displayPath.substr(0, 13) + "...";
+            std::string dp = ws.path;
+            if (dp.size() > 16) dp = dp.substr(0, 13) + "...";
+            std::string modelDisplay = ws.model.empty() ? "(no model)" : extractShortName(ws.model);
             std::cout << "    \033[33m[" << idx << "]\033[0m  ";
-            std::cout << "\033[36m" << std::left << std::setw(16) << displayPath << "\033[0m  ";
-            std::cout << "\033[90m" << std::left << std::setw(10) << ws.model << "\033[0m  ";
+            std::cout << "\033[36m" << std::left << std::setw(16) << dp << "\033[0m  ";
+            std::cout << "\033[90m" << std::left << std::setw(10) << modelDisplay << "\033[0m  ";
+            if (ws.queued > 0) std::cout << "\033[33;1m" << ws.queued << " queued\033[0m  ";
             if (ws.done > 0) std::cout << "\033[32m" << ws.done << " done\033[0m  ";
             if (ws.failed > 0) std::cout << "\033[31m" << ws.failed << " failed\033[0m";
             std::cout << "\n";
@@ -430,7 +353,7 @@ DashboardResult printDashboard() {
         std::cout << "\n";
     }
 
-    // Models - show with numbers for direct selection (offset by workspace count)
+    // Models - numbers continue from workspace count
     bool isDefaultModelsDir = (std::getenv("NRVNA_MODELS_DIR") == nullptr);
     if (!models.empty()) {
         std::cout << "  \033[1mMODELS\033[0m  \033[90m" << displayPath(g_models_dir) << "/";
@@ -445,7 +368,6 @@ DashboardResult printDashboard() {
             if (displayed >= maxDisplay) {
                 size_t remaining = models.size() - maxDisplay;
                 if (remaining <= 3) {
-                    // Just show them all if only a few more
                     const auto& m = models[i];
                     double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
                     std::cout << "    \033[33m[" << (modelOffset + i + 1) << "]\033[0m  ";
@@ -477,22 +399,31 @@ DashboardResult printDashboard() {
         std::cout << "\n";
     }
 
-    return {selectable, models};
-}
-
-void printHelpCommands() {
-    std::cout << "\n";
+    // Footer legend
     std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-    std::cout << "\n";
-    std::cout << "  ./nrvnad <model> <workspace>      start daemon\n";
-    std::cout << "  ./wrk <workspace> \"prompt\"        submit job\n";
-    std::cout << "  ./flw <workspace> [job-id]        retrieve result\n";
-    std::cout << "\n";
+    std::cout << "  \033[90m";
+    if (!selectable.empty()) {
+        std::cout << "[1";
+        if (selectable.size() > 1) std::cout << "-" << selectable.size();
+        std::cout << "] workspace";
+        if (selectable.size() > 1) std::cout << "s";
+    }
+    if (!models.empty()) {
+        if (!selectable.empty()) std::cout << "    ";
+        std::cout << "[" << (selectable.size() + 1);
+        if (models.size() > 1) std::cout << "-" << (selectable.size() + models.size());
+        std::cout << "] model";
+        if (models.size() > 1) std::cout << "s";
+    }
+    if (!selectable.empty() || !models.empty()) std::cout << "    ";
+    std::cout << "m = all models    q = quit\033[0m\n";
+
+    return {selectable, models};
 }
 
 std::string toLower(std::string value);
 bool isNumber(const std::string& value);
-bool confirmWorkspaceReuse(const std::string& workspace);
+std::optional<std::filesystem::path> resolveModelPath(const std::string& modelArg);
 
 int promptWorkers(int defaultVal = 4) {
     std::cout << "  \033[90mWorkers [" << defaultVal << "]:\033[0m ";
@@ -510,41 +441,25 @@ std::optional<std::string> promptWorkspacePath();
 
 std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath);
 
-// Prompt for mmproj - Enter to skip, or provide path
-std::string promptMmproj() {
-    std::cout << "  \033[90mMMProj [Enter=skip, or path]:\033[0m ";
-    std::cout.flush();
+// Helper: select a model, ask workspace + workers, auto-detect mmproj
+std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers) {
+    std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
 
-    std::string input;
-    if (!std::getline(std::cin, input)) {
-        return "";
-    }
-    input = trim(input);
+    auto workspace = promptWorkspacePath();
+    if (!workspace) return std::nullopt;
 
-    if (input.empty()) {
-        return "";
-    }
+    workers = promptWorkers();
+    auto modelPath = (g_models_dir / model.filename).string();
 
-    // Check if path exists
-    if (std::filesystem::exists(std::filesystem::path(input))) {
-        return input;
+    // Auto-detect mmproj
+    std::string mmprojPath;
+    if (auto resolved = resolveMmprojPath(std::filesystem::path(modelPath))) {
+        mmprojPath = resolved->string();
+        std::cout << "  \033[90mMMProj: " << resolved->filename().string() << "\033[0m\n";
     }
 
-    // Try in models directory
-    auto inModels = g_models_dir / input;
-    if (std::filesystem::exists(inModels)) {
-        return inModels.string();
-    }
-
-    std::cout << "  \033[31mMMProj not found, skipping\033[0m\n";
-    return "";
+    return DaemonSelection{modelPath, *workspace, mmprojPath};
 }
-
-std::optional<DaemonSelection> promptUnifiedSelection(
-    const std::vector<WorkspaceInfo>& workspaces,
-    const std::vector<ModelInfo>& models,
-    int& workers
-);
 
 std::optional<DaemonSelection> promptUnifiedSelection(
     const std::vector<WorkspaceInfo>& workspaces,
@@ -554,45 +469,8 @@ std::optional<DaemonSelection> promptUnifiedSelection(
     size_t wsCount = workspaces.size();
     size_t modelCount = models.size();
 
-    // Count workspaces by category (matches dashboard order: pending, stopped, idle)
-    size_t pendingCount = 0, stoppedCount = 0;
-    for (const auto& ws : workspaces) {
-        if (ws.queued > 0) ++pendingCount;
-        else if (ws.daemonStopped) ++stoppedCount;
-    }
-    size_t idleCount = wsCount - pendingCount - stoppedCount;
-
     while (true) {
-        // Show hint about what numbers mean
-        std::cout << "\n  \033[1mSTART DAEMON\033[0m\n\n";
-        size_t nextIdx = 1;
-        if (pendingCount > 0) {
-            std::cout << "    \033[33m[" << nextIdx;
-            if (pendingCount > 1) std::cout << "-" << (nextIdx + pendingCount - 1);
-            std::cout << "]\033[0m  Resume pending (jobs waiting)\n";
-            nextIdx += pendingCount;
-        }
-        if (stoppedCount > 0) {
-            std::cout << "    \033[90m[" << nextIdx;
-            if (stoppedCount > 1) std::cout << "-" << (nextIdx + stoppedCount - 1);
-            std::cout << "]\033[0m  Resume stopped workspace\n";
-            nextIdx += stoppedCount;
-        }
-        if (idleCount > 0) {
-            std::cout << "    \033[90m[" << nextIdx;
-            if (idleCount > 1) std::cout << "-" << (nextIdx + idleCount - 1);
-            std::cout << "]\033[0m  Resume idle workspace\n";
-            nextIdx += idleCount;
-        }
-        if (modelCount > 0) {
-            std::cout << "    \033[90m[" << nextIdx;
-            if (modelCount > 1) std::cout << "-" << (nextIdx + modelCount - 1);
-            std::cout << "]\033[0m  New workspace with model\n";
-            std::cout << "    \033[90mor type model name (e.g., mistral, qwen)\033[0m\n";
-        }
-        std::cout << "\n";
-        std::cout << "    \033[90mm = list all models    h = help    Enter = back\033[0m\n";
-        std::cout << "\n  \033[90mChoice:\033[0m ";
+        std::cout << "\n  \033[90m>\033[0m ";
         std::cout.flush();
 
         std::string input;
@@ -600,17 +478,13 @@ std::optional<DaemonSelection> promptUnifiedSelection(
             return std::nullopt;
         }
         input = trim(input);
-        if (input.empty()) {
+        if (input.empty()) continue;
+
+        if (input == "q" || input == "Q" || input == "quit") {
             return std::nullopt;
         }
 
-        if (input == "h" || input == "H" || input == "help") {
-            printHelpCommands();
-            continue;
-        }
-
         if (input == "m" || input == "M" || input == "more") {
-            // Show all models with numbers
             std::cout << "\n  \033[1mALL MODELS\033[0m\n\n";
             for (size_t i = 0; i < models.size(); ++i) {
                 const auto& m = models[i];
@@ -624,34 +498,41 @@ std::optional<DaemonSelection> promptUnifiedSelection(
             continue;
         }
 
-        // Try as number first
+        // Try as number
         if (isNumber(input)) {
             int choice = std::stoi(input);
 
-            // Is it a workspace selection?
+            // Workspace selection
             if (choice >= 1 && choice <= static_cast<int>(wsCount)) {
                 const auto& ws = workspaces[choice - 1];
-                std::cout << "\n  Starting \033[36m" << ws.path << "\033[0m with \033[36m" << ws.model << "\033[0m\n";
-                workers = promptWorkers();
-                return DaemonSelection{ws.model, ws.path, ws.mmproj};
-            }
-
-            // Is it a model selection by number?
-            int modelIdx = choice - static_cast<int>(wsCount) - 1;
-            if (modelIdx >= 0 && modelIdx < static_cast<int>(modelCount)) {
-                const auto& model = models[modelIdx];
-                std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
-
-                auto workspace = promptWorkspacePath();
-                if (!workspace) {
+                if (ws.model.empty()) {
+                    std::cout << "  \033[33mNo model set. Use: nrvnad <model> " << ws.path << "\033[0m\n";
                     continue;
                 }
-
+                std::string modelDisplay = extractShortName(ws.model);
+                std::cout << "\n  Starting \033[36m" << ws.path << "\033[0m with \033[36m" << modelDisplay << "\033[0m\n";
                 workers = promptWorkers();
-                auto modelPath = (g_models_dir / model.filename).string();
-                std::string mmprojPath = promptMmproj();
 
-                return DaemonSelection{modelPath, *workspace, mmprojPath};
+                // Auto-detect mmproj if stored one is empty or stale
+                std::string mmprojPath = ws.mmproj;
+                if (mmprojPath.empty() || !std::filesystem::exists(mmprojPath)) {
+                    if (auto resolved = resolveModelPath(ws.model)) {
+                        if (auto mmResolved = resolveMmprojPath(*resolved)) {
+                            mmprojPath = mmResolved->string();
+                            std::cout << "  \033[90mMMProj: " << mmResolved->filename().string() << "\033[0m\n";
+                        }
+                    }
+                }
+
+                return DaemonSelection{ws.model, ws.path, mmprojPath};
+            }
+
+            // Model selection
+            int modelIdx = choice - static_cast<int>(wsCount) - 1;
+            if (modelIdx >= 0 && modelIdx < static_cast<int>(modelCount)) {
+                auto result = selectModel(models[modelIdx], workers);
+                if (result) return result;
+                continue;
             }
 
             std::cout << "  \033[31mInvalid number\033[0m\n";
@@ -662,10 +543,8 @@ std::optional<DaemonSelection> promptUnifiedSelection(
         std::string needle = toLower(input);
         std::vector<size_t> matches;
         for (size_t i = 0; i < models.size(); ++i) {
-            std::string shortLower = toLower(models[i].shortName);
             std::string fileLower = toLower(models[i].filename);
-            if (shortLower.find(needle) != std::string::npos ||
-                fileLower.find(needle) != std::string::npos) {
+            if (fileLower.find(needle) != std::string::npos) {
                 matches.push_back(i);
             }
         }
@@ -686,22 +565,9 @@ std::optional<DaemonSelection> promptUnifiedSelection(
             continue;
         }
 
-        // Single match - use it
-        {
-            const auto& model = models[matches[0]];
-            std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
-
-            auto workspace = promptWorkspacePath();
-            if (!workspace) {
-                continue;
-            }
-
-            workers = promptWorkers();
-            auto modelPath = (g_models_dir / model.filename).string();
-            std::string mmprojPath = promptMmproj();
-
-            return DaemonSelection{modelPath, *workspace, mmprojPath};
-        }
+        // Single match
+        auto result = selectModel(models[matches[0]], workers);
+        if (result) return result;
     }
 }
 
@@ -719,41 +585,13 @@ std::string trim(std::string value) {
     return value;
 }
 
-bool confirmWorkspaceReuse(const std::string& workspace) {
-    if (!std::filesystem::exists(std::filesystem::path(workspace))) {
-        return true;
-    }
-
-    std::cout << "  \033[33mWorkspace exists. Reuse? [y/N]:\033[0m ";
+std::optional<std::string> promptWorkspacePath() {
+    std::cout << "  Workspace path [workspace]: ";
     std::cout.flush();
     std::string input;
-    if (!std::getline(std::cin, input)) {
-        return false;
-    }
-    input = toLower(trim(input));
-    return input == "y" || input == "yes";
-}
-
-std::optional<std::string> promptWorkspacePath() {
-    while (true) {
-        std::cout << "\n  \033[90mWorkspace name \033[0m\033[90m(created if new)\033[0m\n";
-        std::cout << "  \033[90mExamples: ws_coding, ./experiments/run1\033[0m\n";
-        std::cout << "  \033[90m[workspace]:\033[0m ";
-        std::cout.flush();
-
-        std::string workspace;
-        if (!std::getline(std::cin, workspace)) {
-            return std::nullopt;
-        }
-        workspace = trim(workspace);
-        if (workspace.empty()) {
-            workspace = "workspace";
-        }
-        if (!confirmWorkspaceReuse(workspace)) {
-            continue;
-        }
-        return workspace;
-    }
+    if (!std::getline(std::cin, input)) return std::nullopt;
+    input = trim(input);
+    return input.empty() ? "workspace" : input;
 }
 
 bool isNumber(const std::string& value) {
@@ -850,6 +688,12 @@ int main(int argc, char* argv[]) {
         if (arg == "-h" || arg == "--help") {
             std::cout << "\033[2J\033[1;1H";
             printDashboard();
+            std::cout << "\n";
+            std::cout << "  \033[1mUSAGE\033[0m\n\n";
+            std::cout << "    nrvnad <model.gguf> <workspace>  select model · assign workspace · start\n";
+            std::cout << "    wrk <workspace> \"prompt\"         submit work\n";
+            std::cout << "    flw <workspace> [job-id]         collect results\n";
+            std::cout << "\n";
             return 0;
         }
         if (arg == "-v" || arg == "--version") {
@@ -890,6 +734,12 @@ int main(int argc, char* argv[]) {
     if (positionalArgs.size() > 1 && workspace.empty()) {
         workspace = positionalArgs[1];
     }
+    if (positionalArgs.size() > 2) {
+        try {
+            int w = std::stoi(positionalArgs[2]);
+            if (w >= 1 && w <= 64) workers = w;
+        } catch (...) {}
+    }
 
     bool cliMode = !modelPath.empty();
     Logger::setLevel(cliMode ? LogLevel::INFO : LogLevel::ERROR);
@@ -898,32 +748,11 @@ int main(int argc, char* argv[]) {
     }
 
     if (!cliMode) {
-        // Interactive mode - show status dashboard first
+        // Interactive mode - show dashboard then go straight to selection
         std::cout << "\033[2J\033[1;1H";
         auto result = printDashboard();
 
-        // Quick tips
-        std::cout << "  \033[90m───────────────────────────────────────────────────────────────\033[0m\n";
-        std::cout << "\n";
-        std::cout << "  ./nrvnad <model> <workspace>      start daemon\n";
-        std::cout << "  ./wrk <workspace> \"prompt\"        submit job\n";
-        std::cout << "  ./flw <workspace> [job-id]        retrieve result\n";
-        std::cout << "\n";
-        std::cout << "  \033[90mEnter = start interactive    q = quit\033[0m\n";
-        std::cout << "  ";
-        std::cout.flush();
-
-        std::string gate;
-        if (!std::getline(std::cin, gate)) {
-            return 0;
-        }
-        gate = trim(gate);
-        if (gate == "q" || gate == "Q" || gate == "quit") {
-            return 0;
-        }
-
-        // Action tray - select what to do
-        auto selection = promptUnifiedSelection(result.selectable, result.models, workers);
+        auto selection = promptUnifiedSelection(result.workspaces, result.models, workers);
         if (!selection) {
             return 0;
         }
@@ -990,7 +819,7 @@ int main(int argc, char* argv[]) {
         // Write model info to workspace for dashboard
         {
             std::ofstream mf(workspace + "/.model");
-            if (mf) mf << extractShortName(modelName);
+            if (mf) mf << modelName;
         }
         if (!mmprojPath.empty()) {
             std::ofstream mp(workspace + "/.mmproj");

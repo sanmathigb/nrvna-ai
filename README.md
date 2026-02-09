@@ -19,15 +19,21 @@ Async inference primitives for local LLMs. Submit jobs, collect results, build p
 git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
 cd nrvna-ai && cmake -S . -B build && cmake --build build -j4
 
-# Start daemon (2 workers)
-./build/nrvnad ./models/your-model.gguf ./workspace 2
+# Place a GGUF model in ./models/
+mkdir -p models
+# Download any GGUF model from https://huggingface.co/models?search=gguf
+
+# Start daemon
+./build/nrvnad ./models/your-model.gguf workspace
 
 # Submit job (returns immediately)
-JOB=$(./build/wrk ./workspace "What is 2+2?")
+JOB=$(./build/wrk workspace "What is 2+2?")
 
 # Collect result
-./build/flw ./workspace $JOB
+./build/flw workspace $JOB
 ```
+
+Or just run `./build/nrvnad` with no arguments for an interactive picker.
 
 ## Why
 
@@ -36,7 +42,7 @@ Every LLM API is synchronous: call, wait, return. nrvna-ai provides true async:
 - **Fire and forget** — submit jobs, come back later
 - **Batch processing** — queue hundreds of jobs, workers process in parallel
 - **Multi-model** — different models for different workspaces
-- **Vision support** — images via `--mmproj` and `--image`
+- **Vision support** — mmproj auto-detected, images via `--image`
 - **Composable** — build agents and pipelines with shell scripts
 - **No infrastructure** — filesystem is the queue (no Redis, no Kafka)
 
@@ -44,9 +50,9 @@ Every LLM API is synchronous: call, wait, return. nrvna-ai provides true async:
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `nrvnad` | Daemon: model + workspace + workers | `nrvnad model.gguf ./ws 4` |
-| `wrk` | Submit: prompt → job ID | `wrk ./ws "prompt"` |
-| `flw` | Collect: job ID → result | `flw ./ws <job-id>` |
+| `nrvnad` | Start daemon | `nrvnad model.gguf workspace` |
+| `wrk` | Submit prompt | `wrk workspace "prompt"` |
+| `flw` | Collect result | `flw workspace job-id` |
 
 Jobs are directories. State is location. Transitions are atomic renames.
 
@@ -62,22 +68,22 @@ workspace/
 
 | Platform | Backend | Status |
 |----------|---------|--------|
-| macOS (Apple Silicon) | Metal | ✅ Full GPU acceleration |
-| macOS (Intel) | CPU | ✅ CPU only |
-| Linux | CPU / CUDA | ✅ CPU, CUDA if available |
+| macOS (Apple Silicon) | Metal | Full GPU acceleration |
+| macOS (Intel) | CPU | CPU only |
+| Linux | CPU / CUDA | CPU, CUDA if available |
 
 ## Multi-Model / Multi-Workspace
 
 ```bash
 # Different models for different tasks
-nrvnad qwen-vl.gguf    ./ws-vision 2 --mmproj qwen-vl-mmproj.gguf
-nrvnad codellama.gguf  ./ws-code   4
-nrvnad phi-3-mini.gguf ./ws-fast   2
+nrvnad qwen-vl.gguf   ws-vision    # mmproj auto-detected
+nrvnad codellama.gguf  ws-code
+nrvnad phi-3.gguf      ws-fast
 
 # Submit to the right workspace
-wrk ./ws-vision "Describe this" --image photo.jpg
-wrk ./ws-code   "Refactor: $(cat main.py)"
-wrk ./ws-fast   "Classify: bug or feature?"
+wrk ws-vision "Describe this" --image photo.jpg
+wrk ws-code   "Refactor: $(cat main.py)"
+wrk ws-fast   "Classify: bug or feature?"
 ```
 
 ## Batch Processing
@@ -85,11 +91,11 @@ wrk ./ws-fast   "Classify: bug or feature?"
 ```bash
 # Submit 100 images for captioning
 for img in photos/*.jpg; do
-  wrk ./workspace "Caption this image" --image "$img"
+  wrk workspace "Caption this image" --image "$img"
 done
 
 # Results accumulate in output/
-ls ./workspace/output/
+ls workspace/output/
 ```
 
 ## Requirements

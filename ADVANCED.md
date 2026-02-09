@@ -141,9 +141,9 @@ Different models for different tasks:
 
 ```bash
 # Start specialized daemons
-nrvnad qwen-vl.gguf    ./ws-vision 2 --mmproj qwen-vl-mmproj.gguf &
-nrvnad codellama.gguf  ./ws-code   4 &
-nrvnad phi-3-mini.gguf ./ws-fast   2 &
+nrvnad qwen-vl.gguf    ./ws-vision &    # mmproj auto-detected
+nrvnad codellama.gguf  ./ws-code   &
+nrvnad phi-3-mini.gguf ./ws-fast   &
 
 # Route by task type
 classify() {
@@ -165,11 +165,13 @@ wrk "$ws" "Process this: $input"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NRVNA_PREDICT` | `768` | Max tokens to generate |
+| `NRVNA_WORKERS` | `4` | Worker threads |
+| `NRVNA_PREDICT` | `2048` | Max tokens to generate |
 | `NRVNA_TEMP` | `0.8` | Sampling temperature |
-| `NRVNA_CTX` | `8192` | Context window size |
+| `NRVNA_MAX_CTX` | `8192` | Context window size |
 | `NRVNA_BATCH` | `2048` | Batch size |
-| `NRVNA_GPU_LAYERS` | `99` (Mac) | Layers offloaded to GPU |
+| `NRVNA_GPU_LAYERS` | `99` (Mac) / `0` (other) | Layers offloaded to GPU |
+| `NRVNA_MODELS_DIR` | `./models/` | Model search path |
 
 ---
 
