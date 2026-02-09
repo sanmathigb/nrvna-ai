@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Async inference primitives for local LLMs. Submit jobs, collect results, build pipelines.
+Build agents, pipelines, and batch workflows with local LLMs. Three commands. Filesystem is the queue. Shell is the orchestrator.
 
 ```
           wrk                    nrvnad                    flw
@@ -11,6 +11,8 @@ Async inference primitives for local LLMs. Submit jobs, collect results, build p
            │                        │                        │
        (submit)              (workers churn)            (collect)
 ```
+
+No frameworks. No Python dependencies. Just three binaries that compose like Unix pipes — small enough to understand in minutes, powerful enough to build agent systems with shell scripts.
 
 ## Install
 
@@ -21,18 +23,18 @@ cmake -S . -B build && cmake --build build -j4
 sudo cmake --install build
 ```
 
-All dependencies are vendored — llama.cpp is built automatically as part of the build. No separate installation needed, and it won't conflict with any existing llama.cpp on your system.
+All dependencies are vendored. llama.cpp is built automatically — no separate install, no conflicts.
 
 ## Quick Start
 
 ```bash
-# Interactive mode — pick a model, assign a workspace, start
+# Interactive — pick a model, assign a workspace, start
 nrvnad
 
 # Or start directly
 nrvnad model.gguf workspace
 
-# Submit job (returns immediately)
+# Submit work (returns immediately)
 JOB=$(wrk workspace "What is 2+2?")
 
 # Collect result
@@ -41,24 +43,62 @@ flw workspace $JOB
 
 Place GGUF models in `./models/` or set `NRVNA_MODELS_DIR`.
 
-## Why
+## Three Primitives
 
-Every LLM API is synchronous: call, wait, return. nrvna-ai provides true async:
+| Tool | What it does |
+|------|-------------|
+| `nrvnad` | Load a model, watch a workspace, process jobs |
+| `wrk` | Submit a prompt, get back a job ID |
+| `flw` | Retrieve a result by job ID |
 
-- **Fire and forget** — submit jobs, come back later
-- **Batch processing** — queue hundreds of jobs, workers process in parallel
-- **Multi-model** — different models for different workspaces
-- **Vision support** — mmproj auto-detected, images via `--image`
-- **Composable** — build agents and pipelines with shell scripts
-- **No infrastructure** — filesystem is the queue (no Redis, no Kafka)
+That's the entire API. Everything else is composition.
 
-## The Primitives
+## What Emerges
 
-| Tool | Purpose | Example |
-|------|---------|---------|
-| `nrvnad` | Start daemon | `nrvnad model.gguf workspace` |
-| `wrk` | Submit prompt | `wrk workspace "prompt"` |
-| `flw` | Collect result | `flw workspace job-id` |
+The primitives are small. What you build with them isn't.
+
+**Agent loop** — feed results back as prompts:
+```bash
+for i in {1..5}; do
+  result=$(wrk workspace "Continue: $memory" | xargs flw workspace -w)
+  memory="$memory\n$result"
+done
+```
+
+**Fan-out / fan-in** — parallelize, then synthesize:
+```bash
+a=$(wrk workspace "Research: databases")
+b=$(wrk workspace "Research: caching")
+c=$(wrk workspace "Research: queuing")
+wrk workspace "Synthesize: $(flw workspace $a) $(flw workspace $b) $(flw workspace $c)"
+```
+
+**Multi-model routing** — different models for different tasks:
+```bash
+nrvnad qwen-vl.gguf   ws-vision    # mmproj auto-detected
+nrvnad codellama.gguf  ws-code
+nrvnad phi-3.gguf      ws-fast
+
+wrk ws-vision "Describe this" --image photo.jpg
+wrk ws-code   "Refactor: $(cat main.py)"
+wrk ws-fast   "Classify: bug or feature?"
+```
+
+**Batch processing** — queue hundreds, workers churn through them:
+```bash
+for img in photos/*.jpg; do
+  wrk workspace "Caption this" --image "$img"
+done
+```
+
+**Memory** — job history is context history:
+```bash
+flw workspace $job1 >> memory.txt
+flw workspace $job2 >> memory.txt
+wrk workspace "Given this context: $(cat memory.txt) — what next?"
+```
+
+## How It Works
 
 Jobs are directories. State is location. Transitions are atomic renames.
 
@@ -66,43 +106,19 @@ Jobs are directories. State is location. Transitions are atomic renames.
 workspace/
 ├── input/ready/    ← queued jobs
 ├── processing/     ← jobs being worked
-├── output/         ← completed jobs (result.txt)
-└── failed/         ← failed jobs (error.txt)
+├── output/         ← completed results
+└── failed/         ← errors
 ```
+
+No database. No message broker. No runtime dependencies. The filesystem is the coordination layer — you can inspect it with `ls`, debug it with `cat`, monitor it with `watch`.
 
 ## Platform Support
 
-| Platform | Backend | Status |
-|----------|---------|--------|
-| macOS (Apple Silicon) | Metal | Full GPU acceleration |
-| macOS (Intel) | CPU | CPU only |
-| Linux | CPU / CUDA | CPU, CUDA if available |
-
-## Multi-Model / Multi-Workspace
-
-```bash
-# Different models for different tasks
-nrvnad qwen-vl.gguf   ws-vision    # mmproj auto-detected
-nrvnad codellama.gguf  ws-code
-nrvnad phi-3.gguf      ws-fast
-
-# Submit to the right workspace
-wrk ws-vision "Describe this" --image photo.jpg
-wrk ws-code   "Refactor: $(cat main.py)"
-wrk ws-fast   "Classify: bug or feature?"
-```
-
-## Batch Processing
-
-```bash
-# Submit 100 images for captioning
-for img in photos/*.jpg; do
-  wrk workspace "Caption this image" --image "$img"
-done
-
-# Results accumulate in output/
-ls workspace/output/
-```
+| Platform | Backend |
+|----------|---------|
+| macOS (Apple Silicon) | Metal GPU acceleration |
+| macOS (Intel) | CPU |
+| Linux | CPU, CUDA if available |
 
 ## Requirements
 
