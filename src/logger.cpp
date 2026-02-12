@@ -14,13 +14,31 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <ctime>
 
 namespace nrvnaai {
 
 static LogLevel g_level = LogLevel::INFO;
 static std::mutex g_log_mutex;
+static std::mutex g_time_mutex;
 static bool g_level_initialized = false;
 static std::unordered_map<std::thread::id, std::string> g_thread_names;
+
+static std::tm toLocalTime(std::time_t raw_time) {
+#if defined(_WIN32)
+    std::tm tm_buf{};
+    localtime_s(&tm_buf, &raw_time);
+    return tm_buf;
+#elif defined(__unix__) || defined(__APPLE__)
+    std::tm tm_buf{};
+    localtime_r(&raw_time, &tm_buf);
+    return tm_buf;
+#else
+    std::lock_guard<std::mutex> lock(g_time_mutex);
+    std::tm* tm_ptr = std::localtime(&raw_time);
+    return tm_ptr ? *tm_ptr : std::tm{};
+#endif
+}
 
 void Logger::setLevel(LogLevel level) noexcept {
     std::lock_guard<std::mutex> lock(g_log_mutex);
@@ -69,8 +87,10 @@ void Logger::log(LogLevel level, const std::string& message) noexcept {
             }
         }
 
+        const std::tm tm_local = toLocalTime(time_t);
+
         std::stringstream ss;
-        ss << "[" << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+        ss << "[" << std::put_time(&tm_local, "%Y-%m-%d %H:%M:%S");
         ss << "." << std::setfill('0') << std::setw(3) << ms.count() << "]";
         ss << " [" << levelToString(level) << "]";
         ss << " [" << thread_info << "]";
