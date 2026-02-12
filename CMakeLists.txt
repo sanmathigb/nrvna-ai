@@ -15,6 +15,10 @@ add_subdirectory(third_party/llama.cpp)
 
 # Add mtmd library for multimodal support
 add_subdirectory(third_party/llama.cpp/tools/mtmd)
+if (TARGET llama-mtmd-cli)
+    # mtmd CLI is not required by nrvna runtime; exclude it from default builds.
+    set_target_properties(llama-mtmd-cli PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
 
 # Core library sources
 set(NRVNA_SOURCES
@@ -53,7 +57,14 @@ target_link_libraries(wrk nrvna_core)
 add_executable(flw cli/flw.cpp)
 target_link_libraries(flw nrvna_core)
 
+add_executable(nrvna-web cli/nrvna-web.cpp)
+target_include_directories(nrvna-web PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/server
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common
+)
+target_link_libraries(nrvna-web nrvna_core)
+
 # Install targets
-install(TARGETS nrvnad wrk flw
+install(TARGETS nrvnad wrk flw nrvna-web
     RUNTIME DESTINATION bin
 )

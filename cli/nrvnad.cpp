@@ -326,6 +326,31 @@ DashboardResult printDashboard() {
     std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
     std::cout << "\n";
 
+    // Show active (running) workspaces as non-selectable status
+    {
+        std::vector<const WorkspaceInfo*> active;
+        for (const auto& ws : allWorkspaces) {
+            if (ws.daemonRunning) active.push_back(&ws);
+        }
+        if (!active.empty()) {
+            std::cout << "  \033[1mACTIVE\033[0m\n\n";
+            for (const auto* ws : active) {
+                std::string dp = ws->path;
+                if (dp.size() > 16) dp = dp.substr(0, 13) + "...";
+                std::string modelDisplay = ws->model.empty() ? "(no model)" : extractShortName(ws->model);
+                std::cout << "    \033[32m●\033[0m   ";
+                std::cout << "\033[36m" << std::left << std::setw(16) << dp << "\033[0m  ";
+                std::cout << "\033[90m" << std::left << std::setw(10) << modelDisplay << "\033[0m  ";
+                if (ws->queued > 0) std::cout << "\033[33;1m" << ws->queued << " queued\033[0m  ";
+                if (ws->processing > 0) std::cout << "\033[36m" << ws->processing << " running\033[0m  ";
+                if (ws->done > 0) std::cout << "\033[32m" << ws->done << " done\033[0m  ";
+                if (ws->failed > 0) std::cout << "\033[31m" << ws->failed << " failed\033[0m";
+                std::cout << "\n";
+            }
+            std::cout << "\n";
+        }
+    }
+
     // Selectable workspaces with inline status tags
     if (!selectable.empty()) {
         std::cout << "  \033[1mWORKSPACES\033[0m\n\n";
