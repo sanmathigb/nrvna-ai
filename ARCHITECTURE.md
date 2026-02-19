@@ -22,12 +22,13 @@ WORKSPACE/
 |-----------|------|------|
 | **Work** | `work.hpp/cpp` | Client API - submits jobs |
 | **Flow** | `flow.hpp/cpp` | Client API - queries job status/results |
-| **Server** | `server.hpp/cpp` | Orchestrates everything |
+| **Server** | `server.hpp/cpp` | Orchestrates Scanner + Pool + Processor |
 | **Scanner** | `scanner.hpp/cpp` | Finds jobs in `input/ready/` |
 | **Pool** | `pool.hpp/cpp` | Thread pool for workers |
-| **Processor** | `processor.hpp/cpp` | Moves jobs through states, calls Runner |
-| **Runner** | `runner.hpp/cpp` | Wraps llama.cpp for inference |
-| **Logger** | `logger.hpp/cpp` | Thread-safe logging with levels |
+| **Processor** | `processor.hpp/cpp` | Routes jobs by type, manages Runners, moves jobs through states |
+| **Runner** | `runner.hpp/cpp` | Wraps llama.cpp for text, vision, and embedding inference |
+| **TtsRunner** | `runner_tts.hpp/cpp` | Text-to-speech inference with OuteTTS + vocoder |
+| **Logger** | `logger.hpp/cpp` | Thread-safe logging to stderr |
 
 ## Workflow: Job Submission (Client Side)
 
@@ -39,6 +40,7 @@ WORKSPACE/
          |
          v
 3. Write prompt to: input/writing/<job_id>/prompt.txt
+   (+ type.txt for embed/tts, images/ for vision)
          |
          v
 4. ATOMIC RENAME: input/writing/<job_id> -> input/ready/<job_id>
@@ -53,13 +55,13 @@ WORKSPACE/
 SERVER (main thread)
   |
   +-- Scanner Thread (scanLoop)
-  |     +-- Every 1s: scan input/ready/ for new jobs
+  |     +-- Every 5s: scan input/ready/ for new jobs
   |     +-- Submit found job IDs to Pool
   |
   +-- Worker Threads (Pool)
         +-- Worker-0, Worker-1, ... Worker-N
         +-- Each pulls jobs from queue
-        +-- Each has its own Runner instance
+        +-- Each has its own Runner + TtsRunner instance
 ```
 
 ### Per-Job Processing
@@ -74,9 +76,13 @@ SERVER (main thread)
 3. Processor::process() called:
    a. ATOMIC RENAME: input/ready/<job_id> -> processing/<job_id>
    b. Read prompt from processing/<job_id>/prompt.txt
-   c. Runner::run(prompt) - llama.cpp inference
-   d. On success: write result.txt, RENAME -> output/<job_id>
-   e. On failure: write error.txt, RENAME -> failed/<job_id>
+   c. Read type from processing/<job_id>/type.txt (default: text)
+   d. Route by type:
+      - text/vision → Runner::run()    → result.txt
+      - embed       → Runner::embed()  → embedding.json
+      - tts         → TtsRunner::run() → audio.wav
+   e. On success: write output file, RENAME -> output/<job_id>
+   f. On failure: write error.txt, RENAME -> failed/<job_id>
 ```
 
 ## Workflow: Result Retrieval (Client Side)
@@ -108,7 +114,38 @@ Read output/<job_id>/result.txt (or error.txt if failed)
 | DONE | `output/<id>` | Completed successfully |
 | FAILED | `failed/<id>` | Error occurred |
 
-## Logging System
+## Inference Pipeline
+
+### Text/Vision (Runner)
+
+Based on llama.cpp `examples/simple/simple.cpp` and `tools/mtmd/mtmd-cli.cpp`.
+
+- Shared `llama_model` across all workers (thread-safe)
+- Per-worker `llama_context` created fresh for each job, freed after
+- Per-worker `mtmd_context` for vision (NOT thread-safe)
+- Vision encoding serialized via mutex (GGML shared compute graph state)
+- Chat template applied via `llama_chat_apply_template` (falls back to raw prompt for base models)
+- Sampler chain: penalties → top_k → top_p → min_p → temp → dist
+- `stripThinkBlocks()` removes `<think>...</think>` from reasoning models
+
+### TTS (TtsRunner)
+
+Based on llama.cpp `tools/tts/tts.cpp`.
+
+- Shared TTS model + vocoder model across workers
+- OuteTTS v0.2/v0.3 auto-detected by vocabulary probing
+- Audio code generation with top_k=4 sampler
+- Code extraction via `<|N|>` token text parsing
+- Vocoder encodes codes → embeddings → ISTFT spectral conversion → 24kHz PCM
+
+### Embeddings (Runner::embed)
+
+- Creates context with `embeddings=true`, mean pooling
+- Returns float vector (dimension depends on model)
+
+## Logging
+
+All log output goes to **stderr**. Stdout is reserved for job status lines.
 
 ### Log Levels
 
@@ -123,11 +160,8 @@ Read output/<job_id>/result.txt (or error.txt if failed)
 ### Configuration
 
 ```bash
-# Set via environment variable
 export NRVNA_LOG_LEVEL=debug    # Options: error, warn, info, debug, trace
-
-# llama.cpp has separate log control
-export LLAMA_LOG_LEVEL=error    # Options: error, warn, info, debug
+export LLAMA_LOG_LEVEL=error    # Controls llama.cpp verbosity (default: error)
 ```
 
 ### Log Format
@@ -136,43 +170,12 @@ export LLAMA_LOG_LEVEL=error    # Options: error, warn, info, debug
 [YYYY-MM-DD HH:MM:SS.mmm] [LEVEL] [ThreadName] Message
 ```
 
-Example:
-```
-[2026-01-12 10:30:45.123] [INFO ] [Scanner] Found 3 ready jobs
-[2026-01-12 10:30:45.125] [INFO ] [Worker-0] Processing job: 1736700000_12345_0
-[2026-01-12 10:30:46.789] [INFO ] [Worker-0] Job completed: 1736700000_12345_0
-```
-
-### Thread Names
-
-- `Main` - Server main thread
-- `Scanner` - Directory scanning thread
-- `Worker-N` - Worker threads (N = 0, 1, 2, ...)
-
-### Usage in Code
-
-```cpp
-#include "nrvna/logger.hpp"
-
-LOG_ERROR("Something went wrong: " + error);
-LOG_WARN("Warning message");
-LOG_INFO("Informational message");
-LOG_DEBUG("Debug details");
-LOG_TRACE("Very detailed tracing");
-```
-
-### Thread Safety
-
-- All logging is mutex-protected
-- Safe to call from any thread
-- Errors go to stderr, everything else to stdout
-
 ## CLI Tools
 
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `nrvnad` | Start daemon | `nrvnad model.gguf workspace` |
-| `wrk` | Submit jobs | `wrk workspace "What is AI?"` |
+| `wrk` | Submit jobs | `wrk workspace "prompt"` |
 | `flw` | Collect results | `flw workspace job-id` |
 
 ## Key Design Decisions
@@ -181,6 +184,7 @@ LOG_TRACE("Very detailed tracing");
 2. **Directory = State** - Job's location IS its state (no database needed)
 3. **Shared model, per-thread context** - llama.cpp model loaded once, each worker gets own inference context
 4. **Filesystem-based** - Survives process crashes, easy to inspect/debug
+5. **Stuck job recovery** - If `finalizeSuccess` fails, attempts `finalizeFailure` to prevent jobs stuck in `processing/`
 
 ## Environment Variables
 
@@ -191,13 +195,19 @@ LOG_TRACE("Very detailed tracing");
 | `NRVNA_GPU_LAYERS` | 99 (Mac) / 0 (other) | GPU layers for model |
 | `NRVNA_PREDICT` | 2048 | Max tokens to generate |
 | `NRVNA_MAX_CTX` | 8192 | Context window size |
+| `NRVNA_BATCH` | 2048 | Batch size |
 | `NRVNA_TEMP` | 0.8 | Sampling temperature |
+| `NRVNA_VISION_TEMP` | 0.3 | Vision sampling temperature |
 | `NRVNA_TOP_K` | 40 | Top-K sampling |
 | `NRVNA_TOP_P` | 0.9 | Top-P sampling |
 | `NRVNA_MIN_P` | 0.05 | Min-P sampling |
 | `NRVNA_REPEAT_PENALTY` | 1.1 | Repetition penalty |
+| `NRVNA_REPEAT_LAST_N` | 64 | Repeat penalty window |
 | `NRVNA_SEED` | 0 | Random seed |
 | `NRVNA_MODELS_DIR` | ./models/ | Model search path |
+| `NRVNA_MAX_IMAGE_SIZE` | 50MB | Max image file size |
+| `NRVNA_QUIET` | (unset) | Suppress mtmd timing logs |
+| `LLAMA_LOG_LEVEL` | error | llama.cpp log verbosity |
 
 ## Thread Model
 
@@ -209,11 +219,15 @@ Main Thread
     |       +-- creates Scanner (1 thread)
     |       +-- creates Pool (N worker threads)
     |       +-- creates Processor (shared, thread-safe)
+    |       |       +-- pre-initializes N Runners
+    |       |       +-- pre-initializes N TtsRunners (if vocoder present)
+    |       |
+    |       +-- recoverOrphanedJobs (processing/ -> ready/ or failed/)
     |
-    +-- waits for shutdown signal
+    +-- waits for shutdown signal (SIGINT/SIGTERM)
 
 Scanner Thread
-    +-- loops every 1 second
+    +-- loops every 5 seconds
     +-- scans input/ready/
     +-- submits jobs to Pool queue
 
@@ -221,5 +235,5 @@ Worker Threads (N)
     +-- wait on condition variable
     +-- pop job from queue
     +-- call Processor::process(job_id, worker_id)
-    +-- each has dedicated Runner instance
+    +-- each has dedicated Runner + TtsRunner instance
 ```

@@ -20,6 +20,7 @@ void printUsage(const char* progName) {
     std::cout << "nrvna-ai Work Submission Tool v" << VERSION << "\n\n";
     std::cout << "Usage: " << progName << " <workspace> <prompt...> [--image <path> ...]\n";
     std::cout << "       " << progName << " <workspace> <text> --embed\n";
+    std::cout << "       " << progName << " <workspace> <text> --mode tts\n";
     std::cout << "       " << progName << " <workspace> -     (read prompt from stdin)\n";
     std::cout << "       " << progName << " --help | --version\n\n";
     std::cout << "Arguments:\n";
@@ -27,10 +28,11 @@ void printUsage(const char* progName) {
     std::cout << "  prompt        Text prompt for inference (can be multiple words)\n";
     std::cout << "  -             Read prompt from stdin\n\n";
     std::cout << "Options:\n";
-    std::cout << "  --image <path>  Attach image (repeatable)\n";
-    std::cout << "  --embed         Submit as embedding job (returns vector)\n";
-    std::cout << "  -h, --help      Show this help message\n";
-    std::cout << "  -v, --version   Show version\n\n";
+    std::cout << "  --image <path>   Attach image (repeatable)\n";
+    std::cout << "  --embed          Submit as embedding job (returns vector)\n";
+    std::cout << "  --mode <type>    Job mode: tts (text-to-speech)\n";
+    std::cout << "  -h, --help       Show this help message\n";
+    std::cout << "  -v, --version    Show version\n\n";
     std::cout << "Environment Variables:\n";
     std::cout << "  NRVNA_LOG_LEVEL    Log level (ERROR, WARN, INFO, DEBUG, TRACE)\n\n";
     std::cout << "Examples:\n";
@@ -67,6 +69,7 @@ int main(int argc, char* argv[]) {
     std::string prompt;
     std::vector<std::filesystem::path> imagePaths;
     bool useEmbed = false;
+    std::string mode;
 
     // Check for stdin input
     bool readStdin = false;
@@ -86,6 +89,12 @@ int main(int argc, char* argv[]) {
             imagePaths.emplace_back(argv[++i]);
         } else if (arg == "--embed") {
             useEmbed = true;
+        } else if (arg == "--mode") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --mode requires a type (e.g. tts)\n";
+                return 1;
+            }
+            mode = argv[++i];
         }
     }
 
@@ -110,7 +119,8 @@ int main(int argc, char* argv[]) {
                 ++i;
                 continue;
             }
-            if (arg == "--embed") continue;  // Skip --embed from prompt
+            if (arg == "--embed") continue;
+            if (arg == "--mode") { ++i; continue; }
             if (!first) promptStream << " ";
             promptStream << argv[i];
             first = false;
@@ -123,11 +133,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    if (!mode.empty() && mode != "tts") {
+        std::cerr << "Error: Unknown mode '" << mode << "'. Supported: tts\n";
+        return 1;
+    }
+
+    if (useEmbed && !mode.empty()) {
+        std::cerr << "Error: --embed and --mode are mutually exclusive\n";
+        return 1;
+    }
+
     try {
         Work work(workspace, true); // Create workspace if missing
 
         SubmitResult result;
-        if (useEmbed) {
+        if (mode == "tts") {
+            result = work.submit(prompt, JobType::Tts);
+        } else if (useEmbed) {
             result = work.submit(prompt, JobType::Embed);
         } else if (!imagePaths.empty()) {
             result = work.submit(prompt, imagePaths);

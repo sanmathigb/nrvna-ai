@@ -19,6 +19,7 @@ class Server final {
 public:
     Server(const std::string& modelPath, const std::filesystem::path& workspace, int workers = 4);
     Server(const std::string& modelPath, const std::string& mmprojPath, const std::filesystem::path& workspace, int workers = 4);
+    Server(const std::string& modelPath, const std::string& mmprojPath, const std::string& vocoderPath, const std::filesystem::path& workspace, int workers = 4);
     ~Server();
 
     Server(const Server&) = delete;
@@ -38,6 +39,7 @@ private:
 
     std::string modelPath_;
     std::string mmprojPath_;
+    std::string vocoderPath_;
     std::filesystem::path workspace_;
     int workers_;
     

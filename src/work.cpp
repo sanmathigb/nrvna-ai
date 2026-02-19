@@ -318,6 +318,9 @@ bool Work::writeTypeFile(const JobId& jobId, JobType type) const noexcept {
             case JobType::Vision:
                 file << "vision";
                 break;
+            case JobType::Tts:
+                file << "tts";
+                break;
             default:
                 file << "text";
                 break;

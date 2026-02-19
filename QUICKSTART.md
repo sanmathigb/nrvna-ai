@@ -81,6 +81,28 @@ Submit and wait in one line:
 wrk workspace "Hello" | xargs flw workspace -w
 ```
 
+## Other Job Types
+
+**Vision** — needs a vision model (e.g. Qwen2.5-VL) with mmproj auto-detected:
+
+```bash
+wrk workspace "Describe this image" --image photo.jpg
+```
+
+**Embeddings** — needs an embedding-capable model:
+
+```bash
+wrk workspace "sentence to embed" --embed
+# Result is a JSON file with the embedding vector
+```
+
+**Text-to-speech** — needs an OuteTTS model with vocoder auto-detected:
+
+```bash
+wrk workspace "Hello, world" --tts
+# Result is a WAV file in the output directory
+```
+
 ## Batch Processing
 
 Submit many jobs, collect results later:

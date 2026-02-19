@@ -15,7 +15,8 @@ namespace nrvnaai {
 enum class JobType : uint8_t {
     Text = 0,
     Embed = 1,
-    Vision = 2
+    Vision = 2,
+    Tts = 3
 };
 
 enum class SubmissionError : uint8_t {

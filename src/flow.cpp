@@ -43,13 +43,19 @@ std::optional<Job> Flow::get(const JobId& id) const noexcept {
         if (jobStatus == Status::Done) {
             auto outputDir = workspace_ / "output" / id;
             auto resultFile = outputDir / "result.txt";
+            auto audioFile = outputDir / "audio.wav";
 
-            if (!std::filesystem::exists(resultFile)) {
-                LOG_DEBUG("Result file not found for job: " + id);
+            std::string content;
+            if (std::filesystem::exists(resultFile)) {
+                content = readResultContent(id);
+            } else if (std::filesystem::exists(audioFile)) {
+                // Audio output — return absolute path as content
+                content = std::filesystem::absolute(audioFile).string();
+            } else {
+                LOG_DEBUG("No result file found for job: " + id);
                 return std::nullopt;
             }
 
-            std::string content = readResultContent(id);
             auto timestamp = std::filesystem::last_write_time(outputDir);
             auto sctp = toSystemTime(timestamp);
 

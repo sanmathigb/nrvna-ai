@@ -9,6 +9,7 @@
 #include "nrvna/pool.hpp"
 #include "nrvna/processor.hpp"
 #include "nrvna/runner.hpp"
+#include "nrvna/runner_tts.hpp"
 #include "nrvna/logger.hpp"
 #include <chrono>
 #include <thread>
@@ -28,6 +29,13 @@ Server::Server(const std::string& modelPath, const std::string& mmprojPath,
                const std::filesystem::path& workspace, int workers)
     : modelPath_(modelPath), mmprojPath_(mmprojPath), workspace_(workspace), workers_(workers) {
     LOG_DEBUG("Server created - model: " + modelPath + ", mmproj: " + mmprojPath + ", workspace: " + workspace_.string() +
+              ", workers: " + std::to_string(workers));
+}
+
+Server::Server(const std::string& modelPath, const std::string& mmprojPath,
+               const std::string& vocoderPath, const std::filesystem::path& workspace, int workers)
+    : modelPath_(modelPath), mmprojPath_(mmprojPath), vocoderPath_(vocoderPath), workspace_(workspace), workers_(workers) {
+    LOG_DEBUG("Server created - model: " + modelPath + ", vocoder: " + vocoderPath + ", workspace: " + workspace_.string() +
               ", workers: " + std::to_string(workers));
 }
 
@@ -75,10 +83,12 @@ bool Server::start() {
     try {
         scanner_ = std::make_unique<Scanner>(workspace_);
         pool_ = std::make_unique<Pool>(workers_);
-        if (mmprojPath_.empty()) {
-            processor_ = std::make_unique<Processor>(workspace_, modelPath_);
-        } else {
+        if (!vocoderPath_.empty()) {
+            processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_, vocoderPath_);
+        } else if (!mmprojPath_.empty()) {
             processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_);
+        } else {
+            processor_ = std::make_unique<Processor>(workspace_, modelPath_);
         }
 
         // Pre-initialize all Runners BEFORE starting worker threads
@@ -88,6 +98,16 @@ bool Server::start() {
             return false;
         }
         LOG_DEBUG("All " + std::to_string(workers_) + " Runner instances initialized successfully");
+
+        // Pre-initialize TTS Runners if vocoder is available
+        if (!vocoderPath_.empty()) {
+            LOG_DEBUG("Pre-initializing TTS runners...");
+            if (!processor_->initializeTtsRunners(workers_)) {
+                LOG_ERROR("Failed to initialize TTS runners");
+                return false;
+            }
+            LOG_DEBUG("TTS runners initialized successfully");
+        }
 
         // Start pool with processor function
         LOG_DEBUG("Starting worker pool with " + std::to_string(workers_) + " threads...");

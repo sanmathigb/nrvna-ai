@@ -42,8 +42,8 @@ std::string getThreadName(int worker_id);
 }
 
 // Convenience macros for common usage
-#define LOG_ERROR(msg) ::nrvnaai::Logger::error(msg)
-#define LOG_WARN(msg)  ::nrvnaai::Logger::warn(msg)  
-#define LOG_INFO(msg)  ::nrvnaai::Logger::info(msg)
-#define LOG_DEBUG(msg) ::nrvnaai::Logger::debug(msg)
-#define LOG_TRACE(msg) ::nrvnaai::Logger::trace(msg)
+#define LOG_ERROR(msg) do { ::nrvnaai::Logger::error(msg); } while(0)
+#define LOG_WARN(msg)  do { ::nrvnaai::Logger::warn(msg); } while(0)
+#define LOG_INFO(msg)  do { ::nrvnaai::Logger::info(msg); } while(0)
+#define LOG_DEBUG(msg) do { ::nrvnaai::Logger::debug(msg); } while(0)
+#define LOG_TRACE(msg) do { ::nrvnaai::Logger::trace(msg); } while(0)

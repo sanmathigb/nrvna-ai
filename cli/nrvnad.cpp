@@ -40,6 +40,7 @@ struct WorkspaceInfo {
     std::string path;
     std::string model;
     std::string mmproj;
+    std::string vocoder;
     size_t queued = 0;
     size_t processing = 0;
     size_t done = 0;
@@ -92,7 +93,7 @@ std::filesystem::path resolveModelsDir(const char* argv0) {
     std::filesystem::path exePath(argv0 ? argv0 : "");
     if (!exePath.empty()) {
         std::error_code ec;
-        exePath = std::filesystem::absolute(exePath, ec);
+        exePath = std::filesystem::absolute(exePath, ec).lexically_normal();
         if (!ec && std::filesystem::exists(exePath)) {
             auto base = exePath.parent_path();
             if (std::filesystem::exists(base / "models")) {
@@ -194,6 +195,8 @@ WorkspaceInfo readWorkspaceInfo(const std::filesystem::path& path, const std::st
     if (mf) std::getline(mf, ws.model);
     std::ifstream mp(path / ".mmproj");
     if (mp) std::getline(mp, ws.mmproj);
+    std::ifstream vf(path / ".vocoder");
+    if (vf) std::getline(vf, ws.vocoder);
 
     return ws;
 }
@@ -231,6 +234,8 @@ std::vector<WorkspaceInfo> scanWorkspaces() {
     return workspaces;
 }
 
+std::string toLower(std::string value);
+
 std::string extractShortName(const std::string& filename) {
     size_t pos = filename.find_first_of("-_.");
     std::string name = (pos != std::string::npos && pos > 0)
@@ -251,6 +256,8 @@ std::vector<ModelInfo> scanModels() {
         if (entry.path().extension() != ".gguf") continue;
         std::string filename = entry.path().filename().string();
         if (filename.find("mmproj") != std::string::npos) continue;
+        std::string lower = toLower(filename);
+        if (lower.find("vocoder") != std::string::npos || lower.find("wavtokenizer") != std::string::npos) continue;
 
         ModelInfo m;
         m.filename = filename;
@@ -297,6 +304,7 @@ struct DaemonSelection {
     std::string modelPath;
     std::string workspace;
     std::string mmprojPath;
+    std::string vocoderPath;
 };
 
 DashboardResult printDashboard() {
@@ -465,6 +473,7 @@ int promptWorkers(int defaultVal = 4) {
 std::optional<std::string> promptWorkspacePath();
 
 std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath);
+std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath);
 
 // Helper: select a model, ask workspace + workers, auto-detect mmproj
 std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers) {
@@ -483,7 +492,14 @@ std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers)
         std::cout << "  \033[90mMMProj: " << resolved->filename().string() << "\033[0m\n";
     }
 
-    return DaemonSelection{modelPath, *workspace, mmprojPath};
+    // Auto-detect vocoder for TTS models
+    std::string vocoderPathStr;
+    if (auto resolved = resolveVocoderPath(std::filesystem::path(modelPath))) {
+        vocoderPathStr = resolved->string();
+        std::cout << "  \033[90mVocoder: " << resolved->filename().string() << "\033[0m\n";
+    }
+
+    return DaemonSelection{modelPath, *workspace, mmprojPath, vocoderPathStr};
 }
 
 std::optional<DaemonSelection> promptUnifiedSelection(
@@ -549,7 +565,18 @@ std::optional<DaemonSelection> promptUnifiedSelection(
                     }
                 }
 
-                return DaemonSelection{ws.model, ws.path, mmprojPath};
+                // Auto-detect vocoder if not stored
+                std::string vocoderPathWs = ws.vocoder;
+                if (vocoderPathWs.empty() || !std::filesystem::exists(vocoderPathWs)) {
+                    if (auto resolved = resolveModelPath(ws.model)) {
+                        if (auto vocResolved = resolveVocoderPath(*resolved)) {
+                            vocoderPathWs = vocResolved->string();
+                            std::cout << "  \033[90mVocoder: " << vocResolved->filename().string() << "\033[0m\n";
+                        }
+                    }
+                }
+
+                return DaemonSelection{ws.model, ws.path, mmprojPath, vocoderPathWs};
             }
 
             // Model selection
@@ -730,6 +757,7 @@ int main(int argc, char* argv[]) {
     std::string modelPath;
     std::string workspace;
     std::string mmprojPath;
+    std::string vocoderPath;
     int workers = 4;
 
     // Parse all flags first, collect positional args
@@ -745,6 +773,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--mmproj" && i + 1 < argc) {
             mmprojPath = argv[++i];
+        } else if (arg == "--vocoder" && i + 1 < argc) {
+            vocoderPath = argv[++i];
         } else if (arg == "--workspace" && i + 1 < argc) {
             workspace = argv[++i];
         } else if (arg[0] != '-') {
@@ -763,7 +793,9 @@ int main(int argc, char* argv[]) {
         try {
             int w = std::stoi(positionalArgs[2]);
             if (w >= 1 && w <= 64) workers = w;
-        } catch (...) {}
+        } catch (...) {
+            std::cerr << "Warning: invalid worker count '" << positionalArgs[2] << "', using default " << workers << "\n";
+        }
     }
 
     bool cliMode = !modelPath.empty();
@@ -783,12 +815,13 @@ int main(int argc, char* argv[]) {
         modelPath = selection->modelPath;
         workspace = selection->workspace;
         mmprojPath = selection->mmprojPath;
+        vocoderPath = selection->vocoderPath;
 
         // Transition to server mode: respect NRVNA_LOG_LEVEL (defaults to INFO)
         Logger::initFromEnv();
     } else if (workspace.empty()) {
         std::cerr << "Error: workspace required\n";
-        std::cerr << "Usage: nrvnad <model> <workspace> [--mmproj <path>] [-w <n>]\n";
+        std::cerr << "Usage: nrvnad <model> <workspace> [--mmproj <path>] [--vocoder <path>] [-w <n>]\n";
         return 1;
     }
 
@@ -810,6 +843,19 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Auto-detect vocoder for TTS models in CLI mode
+    if (vocoderPath.empty()) {
+        if (auto resolved = resolveVocoderPath(std::filesystem::path(modelPath))) {
+            vocoderPath = resolved->string();
+        }
+    }
+
+    // Validate vocoder path if specified
+    if (!vocoderPath.empty() && !std::filesystem::exists(std::filesystem::path(vocoderPath))) {
+        std::cerr << "Error: Vocoder not found: " << vocoderPath << "\n";
+        return 1;
+    }
+
     applyModelDefaults(std::filesystem::path(modelPath));
     recordWorkspacePath(std::filesystem::path(workspace));
 
@@ -824,7 +870,9 @@ int main(int argc, char* argv[]) {
 
     try {
         std::unique_ptr<Server> server;
-        if (!mmprojPath.empty()) {
+        if (!vocoderPath.empty()) {
+            server = std::make_unique<Server>(modelPath, mmprojPath, vocoderPath, workspace, workers);
+        } else if (!mmprojPath.empty()) {
             server = std::make_unique<Server>(modelPath, mmprojPath, workspace, workers);
         } else {
             server = std::make_unique<Server>(modelPath, workspace, workers);
@@ -852,6 +900,10 @@ int main(int argc, char* argv[]) {
             std::ofstream mp(workspace + "/.mmproj");
             if (mp) mp << mmprojPath;
         }
+        if (!vocoderPath.empty()) {
+            std::ofstream vf(workspace + "/.vocoder");
+            if (vf) vf << vocoderPath;
+        }
 
         std::cout << "\n";
         std::cout << "  \033[1mRUNNING\033[0m\n\n";
@@ -860,6 +912,9 @@ int main(int argc, char* argv[]) {
         std::cout << "    Workspace  " << workspace << "\n";
         if (!mmprojPath.empty()) {
             std::cout << "    MMProj     " << mmprojPath << "\n";
+        }
+        if (!vocoderPath.empty()) {
+            std::cout << "    Vocoder    " << vocoderPath << "\n";
         }
         std::cout << "\n";
         std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
@@ -905,6 +960,7 @@ int main(int argc, char* argv[]) {
     LOG_DEBUG("nrvna-ai daemon stopped");
     return 0;
 }
+
 std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath) {
     std::filesystem::path dir = modelPath.parent_path();
     if (dir.empty() || !std::filesystem::exists(dir)) {
@@ -932,6 +988,33 @@ std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::pa
         return std::nullopt;
     }
 
+    std::sort(matches.begin(), matches.end());
+    return matches.front();
+}
+
+std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath) {
+    std::filesystem::path dir = modelPath.parent_path();
+    if (dir.empty() || !std::filesystem::exists(dir)) {
+        return std::nullopt;
+    }
+
+    // Only auto-detect vocoder for TTS models (outetts, oute)
+    std::string modelName = toLower(modelPath.stem().string());
+    if (!containsToken(modelName, "outetts") && !containsToken(modelName, "oute")) {
+        return std::nullopt;
+    }
+
+    std::vector<std::filesystem::path> matches;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".gguf") continue;
+        std::string filename = toLower(entry.path().filename().string());
+        if (containsToken(filename, "vocoder") || containsToken(filename, "wavtokenizer")) {
+            matches.push_back(entry.path());
+        }
+    }
+
+    if (matches.empty()) return std::nullopt;
     std::sort(matches.begin(), matches.end());
     return matches.front();
 }

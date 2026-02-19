@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
         if (wait) {
             while (true) {
                 Status s = flow.status(jobId);
-                if (s == Status::Done || s == Status::Failed) break;
+                if (s == Status::Done || s == Status::Failed || s == Status::Missing) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
@@ -123,6 +123,12 @@ int main(int argc, char* argv[]) {
             }
 
             if (job->status == Status::Done) {
+                // Check for audio output — print path instead of binary content
+                auto audioPath = std::filesystem::path(workspace) / "output" / jobId / "audio.wav";
+                if (std::filesystem::exists(audioPath)) {
+                    std::cout << std::filesystem::absolute(audioPath).string() << std::endl;
+                    return 0;
+                }
                 std::cout << job->content << std::endl;
                 return 0;
             } else if (job->status == Status::Failed) {

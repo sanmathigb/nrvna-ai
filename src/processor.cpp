@@ -6,6 +6,7 @@
 
 #include "nrvna/processor.hpp"
 #include "nrvna/runner.hpp"
+#include "nrvna/runner_tts.hpp"
 #include "nrvna/logger.hpp"
 #include <chrono>
 #include <ctime>
@@ -40,12 +41,14 @@ Processor::Processor(const std::filesystem::path& workspace, const std::string& 
     LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_ + " and mmproj: " + mmprojPath_);
 }
 
+Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath, const std::string& vocoderPath)
+    : workspace_(workspace), modelPath_(modelPath), mmprojPath_(mmprojPath), vocoderPath_(vocoderPath) {
+    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_ + " and vocoder: " + vocoderPath_);
+}
+
 ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
-    // CRITICAL: Get or create Runner instance for this worker thread
-    // This implements the original nrvna pattern for Metal compatibility
-    std::unique_ptr<Runner>& runner = getRunnerForWorker(workerId);
     LOG_DEBUG("Processing job: " + jobId);
-    
+
     try {
         // Step 1: Move from ready to processing (atomic)
         if (!moveReadyToProcessing(jobId)) {
@@ -70,7 +73,59 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             return ProcessResult::Failed;
         }
 
-        // Step 3: Run inference
+        // Check job type for routing
+        std::string jobType = readJobType(jobId);
+
+        // TTS dispatches to its own runner — no text Runner needed
+        if (jobType == "tts") {
+            if (vocoderPath_.empty()) {
+                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                {
+                    std::lock_guard<std::mutex> lock(g_output_mutex);
+                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
+                }
+                (void)finalizeFailure(jobId, "TTS requires --vocoder flag");
+                return ProcessResult::Failed;
+            }
+
+            std::unique_ptr<TtsRunner>& ttsRunner = getTtsRunnerForWorker(workerId);
+            if (!ttsRunner) {
+                {
+                    std::lock_guard<std::mutex> lock(g_output_mutex);
+                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  no TTS runner\n" << std::flush;
+                }
+                (void)finalizeFailure(jobId, "No TTS runner available");
+                return ProcessResult::SystemError;
+            }
+
+            auto ttsResult = ttsRunner->run(prompt);
+            if (ttsResult.ok) {
+                if (finalizeAudio(jobId, ttsResult.audio, ttsResult.sample_rate)) {
+                    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                    {
+                        std::lock_guard<std::mutex> lock(g_output_mutex);
+                        std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
+                    }
+                    LOG_INFO("TTS COMPLETED: " + jobId + " -> " + std::to_string(ttsResult.audio.size()) + " samples");
+                    return ProcessResult::Success;
+                } else {
+                    LOG_ERROR("Failed to finalize TTS job: " + jobId);
+                    return ProcessResult::SystemError;
+                }
+            } else {
+                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                {
+                    std::lock_guard<std::mutex> lock(g_output_mutex);
+                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
+                }
+                (void)finalizeFailure(jobId, ttsResult.error);
+                LOG_WARN("TTS job failed: " + jobId + " - " + ttsResult.error);
+                return ProcessResult::Failed;
+            }
+        }
+
+        // Text, embed, or vision — these all need the text Runner
+        std::unique_ptr<Runner>& runner = getRunnerForWorker(workerId);
         if (!runner) {
             {
                 std::lock_guard<std::mutex> lock(g_output_mutex);
@@ -80,11 +135,7 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             return ProcessResult::SystemError;
         }
 
-        // Check job type for routing
-        std::string jobType = readJobType(jobId);
-
         if (jobType == "embed") {
-            // Embedding job
             auto embedResult = runner->embed(prompt);
             if (embedResult.ok) {
                 if (finalizeEmbedding(jobId, embedResult.embedding)) {
@@ -111,7 +162,6 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             }
         }
 
-        // Text or vision job
         std::vector<std::filesystem::path> imagePaths = readImages(jobId);
         RunResult result;
         if (imagePaths.empty()) {
@@ -132,6 +182,9 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                 return ProcessResult::Success;
             } else {
                 LOG_ERROR("Failed to finalize successful job: " + jobId);
+                if (!finalizeFailure(jobId, "Failed to write result to output directory")) {
+                    LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
+                }
                 return ProcessResult::SystemError;
             }
         } else {
@@ -394,15 +447,108 @@ bool Processor::initializeRunners(int numWorkers) {
 // CRITICAL: Metal-compatible per-thread Runner management
 std::unique_ptr<Runner>& Processor::getRunnerForWorker(int workerId) {
     std::lock_guard<std::mutex> lock(runnersMutex_);
-    
+
     auto it = runners_.find(workerId);
     if (it == runners_.end()) {
-        // This should never happen if initializeRunners() was called properly
         LOG_ERROR("Runner not found for worker " + std::to_string(workerId) + " - was initializeRunners() called?");
         throw std::runtime_error("Runner not initialized for worker " + std::to_string(workerId));
     }
-    
+
     return it->second;
+}
+
+bool Processor::initializeTtsRunners(int numWorkers) {
+    if (vocoderPath_.empty()) {
+        LOG_DEBUG("No vocoder path, skipping TTS runner init");
+        return true;
+    }
+
+    std::lock_guard<std::mutex> lock(ttsRunnersMutex_);
+    try {
+        for (int i = 0; i < numWorkers; ++i) {
+            LOG_DEBUG("Pre-creating TtsRunner instance for worker " + std::to_string(i));
+            ttsRunners_[i] = std::make_unique<TtsRunner>(modelPath_, vocoderPath_);
+        }
+        LOG_DEBUG("All " + std::to_string(numWorkers) + " TtsRunner instances initialized");
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to initialize TTS runners: " + std::string(e.what()));
+        return false;
+    }
+}
+
+std::unique_ptr<TtsRunner>& Processor::getTtsRunnerForWorker(int workerId) {
+    std::lock_guard<std::mutex> lock(ttsRunnersMutex_);
+
+    auto it = ttsRunners_.find(workerId);
+    if (it == ttsRunners_.end()) {
+        LOG_ERROR("TtsRunner not found for worker " + std::to_string(workerId));
+        throw std::runtime_error("TtsRunner not initialized for worker " + std::to_string(workerId));
+    }
+
+    return it->second;
+}
+
+bool Processor::finalizeAudio(const JobId& jobId, const std::vector<float>& audio, int sampleRate) noexcept {
+    try {
+        auto processingPath = getJobPath("processing", jobId);
+        auto outputPath = getJobPath("output", jobId);
+
+        // Write WAV to temp file first
+        auto tempPath = processingPath / "audio.wav.tmp";
+        {
+            std::ofstream file(tempPath, std::ios::binary);
+            if (!file) return false;
+
+            // WAV header
+            struct {
+                char riff[4] = {'R', 'I', 'F', 'F'};
+                uint32_t chunk_size;
+                char wave[4] = {'W', 'A', 'V', 'E'};
+                char fmt[4] = {'f', 'm', 't', ' '};
+                uint32_t fmt_chunk_size = 16;
+                uint16_t audio_format = 1;
+                uint16_t num_channels = 1;
+                uint32_t sample_rate;
+                uint32_t byte_rate;
+                uint16_t block_align;
+                uint16_t bits_per_sample = 16;
+                char data[4] = {'d', 'a', 't', 'a'};
+                uint32_t data_size;
+            } header;
+            static_assert(sizeof(header) == 44, "WAV header struct has unexpected padding");
+
+            header.sample_rate = static_cast<uint32_t>(sampleRate);
+            header.byte_rate = header.sample_rate * header.num_channels * (header.bits_per_sample / 8);
+            header.block_align = header.num_channels * (header.bits_per_sample / 8);
+            header.data_size = static_cast<uint32_t>(audio.size() * (header.bits_per_sample / 8));
+            header.chunk_size = 36 + header.data_size;
+
+            file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+            for (const auto& sample : audio) {
+                int16_t pcm = static_cast<int16_t>(std::max(-32768.0, std::min(32767.0, sample * 32767.0)));
+                file.write(reinterpret_cast<const char*>(&pcm), sizeof(pcm));
+            }
+            file.flush();
+            if (!file.good()) return false;
+        }
+
+        // Rename temp to final
+        auto finalPath = processingPath / "audio.wav";
+        std::filesystem::rename(tempPath, finalPath);
+
+        // Atomic move to output
+        std::filesystem::rename(processingPath, outputPath);
+
+        LOG_DEBUG("TTS job finalized: " + jobId);
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to finalize audio for job " + jobId + ": " + std::string(e.what()));
+        return false;
+    } catch (...) {
+        LOG_ERROR("Unknown error finalizing audio for job: " + jobId);
+        return false;
+    }
 }
 
 }

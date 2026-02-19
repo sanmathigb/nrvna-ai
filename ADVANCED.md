@@ -37,9 +37,9 @@ job2=$(wrk ./workspace "Research: PostgreSQL ecosystem")
 job3=$(wrk ./workspace "Research: PostgreSQL vs MongoDB")
 
 # Wait for all
-result1=$(flw ./workspace $job1)
-result2=$(flw ./workspace $job2)
-result3=$(flw ./workspace $job3)
+result1=$(flw ./workspace -w $job1)
+result2=$(flw ./workspace -w $job2)
+result3=$(flw ./workspace -w $job3)
 
 # Fan-in: synthesize
 wrk ./workspace "Synthesize these findings into a recommendation:
@@ -58,15 +58,15 @@ Generate, critique, improve:
 GOAL="Write a cover letter for a senior engineer position"
 
 # First draft
-draft=$(wrk ./workspace "$GOAL" | xargs flw ./workspace)
+draft=$(wrk ./workspace "$GOAL" | xargs flw ./workspace -w)
 
 # Critique
-critique=$(wrk ./workspace "Critique this draft. What's weak? $draft" | xargs flw ./workspace)
+critique=$(wrk ./workspace "Critique this draft. What's weak? $draft" | xargs flw ./workspace -w)
 
 # Improve
 final=$(wrk ./workspace "Improve this draft based on feedback:
 Draft: $draft
-Feedback: $critique" | xargs flw ./workspace)
+Feedback: $critique" | xargs flw ./workspace -w)
 
 echo "$final"
 ```
@@ -84,7 +84,7 @@ memory=""
 for i in {1..5}; do
   result=$(wrk ./workspace "Goal: $GOAL
 Previous work: $memory
-Continue. Write the next section. Say DONE if complete." | xargs flw ./workspace)
+Continue. Write the next section. Say DONE if complete." | xargs flw ./workspace -w)
 
   echo "=== Iteration $i ==="
   echo "$result"
@@ -95,6 +95,59 @@ Continue. Write the next section. Say DONE if complete." | xargs flw ./workspace
 
   memory="$memory\n---\n$result"
 done
+```
+
+---
+
+## Vision Batch
+
+Caption or analyze a directory of images:
+
+```bash
+nrvnad qwen-vl.gguf ./ws-vision    # mmproj auto-detected
+
+for img in photos/*.jpg; do
+  wrk ./ws-vision "Describe this image in detail" --image "$img" >> jobs.txt
+done
+
+# Collect all captions
+for job in $(cat jobs.txt); do
+  echo "=== $job ==="
+  flw ./ws-vision -w $job
+done
+```
+
+---
+
+## Embeddings for Search
+
+Generate embeddings and use them for similarity:
+
+```bash
+# Generate embeddings for a corpus
+for doc in docs/*.txt; do
+  content=$(cat "$doc")
+  job=$(wrk ./workspace "$content" --embed)
+  echo "$doc $job" >> embed-jobs.txt
+done
+
+# Results are JSON files in output/<job-id>/embedding.json
+# Each contains: { "dim": N, "vector": [...] }
+```
+
+---
+
+## Text-to-Speech
+
+Generate audio from text:
+
+```bash
+nrvnad outetts.gguf ./ws-tts    # vocoder auto-detected
+
+job=$(wrk ./ws-tts "Welcome to nrvna ai" --tts)
+flw ./ws-tts -w $job
+
+# Result is a WAV file at workspace/output/<job-id>/audio.wav
 ```
 
 ---
@@ -144,6 +197,7 @@ Different models for different tasks:
 nrvnad qwen-vl.gguf    ./ws-vision &    # mmproj auto-detected
 nrvnad codellama.gguf  ./ws-code   &
 nrvnad phi-3-mini.gguf ./ws-fast   &
+nrvnad outetts.gguf    ./ws-tts    &    # vocoder auto-detected
 
 # Route by task type
 classify() {
@@ -167,9 +221,14 @@ wrk "$ws" "Process this: $input"
 |----------|---------|-------------|
 | `NRVNA_WORKERS` | `4` | Worker threads |
 | `NRVNA_PREDICT` | `2048` | Max tokens to generate |
-| `NRVNA_TEMP` | `0.8` | Sampling temperature |
 | `NRVNA_MAX_CTX` | `8192` | Context window size |
 | `NRVNA_BATCH` | `2048` | Batch size |
+| `NRVNA_TEMP` | `0.8` | Sampling temperature |
+| `NRVNA_VISION_TEMP` | `0.3` | Vision sampling temperature |
+| `NRVNA_TOP_K` | `40` | Top-K sampling |
+| `NRVNA_TOP_P` | `0.9` | Top-P (nucleus) sampling |
+| `NRVNA_MIN_P` | `0.05` | Min-P sampling |
+| `NRVNA_REPEAT_PENALTY` | `1.1` | Repetition penalty |
 | `NRVNA_GPU_LAYERS` | `99` (Mac) / `0` (other) | Layers offloaded to GPU |
 | `NRVNA_MODELS_DIR` | `./models/` | Model search path |
 | `NRVNA_LOG_LEVEL` | `info` | Logging: error, warn, info, debug, trace |
@@ -179,7 +238,8 @@ wrk "$ws" "Process this: $input"
 ## Tips
 
 1. **More workers = more parallelism** — but diminishing returns past CPU cores
-2. **Vision is serialized** — mutex prevents parallel vision corruption
+2. **Vision is serialized** — mutex prevents parallel vision encoding corruption
 3. **Jobs are directories** — inspect with `ls`, `cat`, `tree`
 4. **Atomic state** — job location *is* job state
 5. **Compose with shell** — the primitives are designed for piping
+6. **TTS vocoder auto-detected** — place vocoder .gguf next to your OuteTTS model

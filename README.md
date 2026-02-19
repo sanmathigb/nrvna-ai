@@ -53,6 +53,22 @@ Place GGUF models in `./models/` or set `NRVNA_MODELS_DIR`.
 
 That's the entire API. Everything else is composition.
 
+## Job Types
+
+```bash
+# Text (default)
+wrk workspace "Summarize this document"
+
+# Vision — describe, caption, OCR (mmproj auto-detected)
+wrk workspace "What's in this image?" --image photo.jpg
+
+# Embeddings — vector representations for search/similarity
+wrk workspace "sentence to embed" --embed
+
+# Text-to-speech — generate audio (vocoder auto-detected for OuteTTS models)
+wrk workspace "Hello, world" --tts
+```
+
 ## What Emerges
 
 The primitives are small. What you build with them isn't.
@@ -106,8 +122,8 @@ Jobs are directories. State is location. Transitions are atomic renames.
 workspace/
 ├── input/ready/    ← queued jobs
 ├── processing/     ← jobs being worked
-├── output/         ← completed results
-└── failed/         ← errors
+├── output/         ← completed results (result.txt, embedding.json, or audio.wav)
+└── failed/         ← errors (error.txt)
 ```
 
 No database. No message broker. No runtime dependencies. The filesystem is the coordination layer — you can inspect it with `ls`, debug it with `cat`, monitor it with `watch`.

@@ -15,6 +15,7 @@
 namespace nrvnaai {
 
 class Runner;
+class TtsRunner;
 
 enum class ProcessResult : uint8_t {
     Success,
@@ -27,6 +28,7 @@ class Processor {
 public:
     explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath);
     explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath);
+    explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath, const std::string& vocoderPath);
     
     Processor(const Processor&) = delete;
     Processor& operator=(const Processor&) = delete;
@@ -35,6 +37,7 @@ public:
 
     // Pre-initialize runners for all worker threads (MUST be called before threads start)
     bool initializeRunners(int numWorkers);
+    bool initializeTtsRunners(int numWorkers);
 
     [[nodiscard]] ProcessResult process(const JobId& jobId, int workerId) noexcept;
 
@@ -42,10 +45,15 @@ private:
     std::filesystem::path workspace_;
     std::string modelPath_;
     std::string mmprojPath_;
-    
+    std::string vocoderPath_;
+
     // Per-thread Runner instances for Metal compatibility
     std::unordered_map<int, std::unique_ptr<Runner>> runners_;
     std::mutex runnersMutex_;
+
+    // Per-thread TTS Runner instances
+    std::unordered_map<int, std::unique_ptr<TtsRunner>> ttsRunners_;
+    std::mutex ttsRunnersMutex_;
     
     [[nodiscard]] bool moveReadyToProcessing(const JobId& jobId) noexcept;
     [[nodiscard]] bool finalizeSuccess(const JobId& jobId, const std::string& result) noexcept;
@@ -56,9 +64,11 @@ private:
     [[nodiscard]] std::vector<std::filesystem::path> readImages(const JobId& jobId) const noexcept;
     [[nodiscard]] std::filesystem::path getJobPath(const char* phase, const JobId& jobId) const noexcept;
     [[nodiscard]] bool finalizeEmbedding(const JobId& jobId, const std::vector<float>& embedding) noexcept;
-    
+    [[nodiscard]] bool finalizeAudio(const JobId& jobId, const std::vector<float>& audio, int sampleRate) noexcept;
+
     // Metal-compatible per-thread Runner management
     std::unique_ptr<Runner>& getRunnerForWorker(int workerId);
+    std::unique_ptr<TtsRunner>& getTtsRunnerForWorker(int workerId);
 };
 
 }

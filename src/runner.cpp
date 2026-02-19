@@ -274,6 +274,7 @@ RunResult Runner::runText(const std::string& prompt) {
         return {false, "", "Model not loaded"};
     }
     
+    llama_sampler* smpl = nullptr;
     try {
         SamplingConfig config = buildSamplingConfig();
         std::string formatted_prompt = formatPrompt(prompt);
@@ -288,7 +289,7 @@ RunResult Runner::runText(const std::string& prompt) {
         if (config.n_predict > max_predict) {
             config.n_predict = max_predict;
         }
-        
+
         std::vector<llama_token> prompt_tokens(n_prompt);
         if (llama_tokenize(vocab, formatted_prompt.c_str(), formatted_prompt.size(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
             return {false, "", "Failed to tokenize the prompt"};
@@ -300,10 +301,10 @@ RunResult Runner::runText(const std::string& prompt) {
         if (!context_) {
             return {false, "", "Failed to create context"};
         }
-        
+
         LOG_DEBUG("Context: " + std::to_string(ctx_params.n_ctx) + " tokens");
 
-        llama_sampler* smpl = buildSampler(config);
+        smpl = buildSampler(config);
         llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
         
         llama_token decoder_start_token_id = 0;
@@ -364,6 +365,10 @@ RunResult Runner::runText(const std::string& prompt) {
         return {true, output, ""};
         
     } catch (const std::exception& e) {
+        if (smpl) {
+            llama_sampler_free(smpl);
+            smpl = nullptr;
+        }
         if (context_) {
             llama_free(context_);
             context_ = nullptr;
