@@ -6,11 +6,11 @@
 
 #include "nrvna/runner.hpp"
 #include "nrvna/logger.hpp"
+#include "llama_util.hpp"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include <chrono>
-#include <cstdlib>
 #include <thread>
 #include <algorithm>
 #include <regex>
@@ -27,12 +27,6 @@ std::mutex Runner::model_mutex_;
 // when multiple vision encodings run simultaneously
 static std::mutex vision_encoding_mutex_;
 
-// Helper: Get integer from env with default
-static int env_int(const char* name, int defv) {
-    if (const char* v = std::getenv(name)) return std::atoi(v);
-    return defv;
-}
-
 // Strip <think>...</think> blocks from reasoning models (DeepSeek-R1, QwQ, etc.)
 static std::string stripThinkBlocks(const std::string& text) {
     static const std::regex thinkRegex("<think>[\\s\\S]*?</think>\\s*");
@@ -40,35 +34,6 @@ static std::string stripThinkBlocks(const std::string& text) {
     // Trim leading whitespace left behind
     size_t start = result.find_first_not_of(" \t\n\r");
     return (start == std::string::npos) ? "" : result.substr(start);
-}
-
-// Helper: Get float from env with default
-static float env_float(const char* name, float defv) {
-    if (const char* v = std::getenv(name)) return std::atof(v);
-    return defv;
-}
-
-// Configurable llama.cpp log filtering - keep UI clean
-static void filtered_llama_log(enum ggml_log_level level, const char* text, void* /*user_data*/) {
-    // Skip progress dots and other noise for clean UI
-    if (!text || text[0] == '.' || text[0] == '\n' || text[0] == '\0') {
-        return;
-    }
-
-    static int filter_level = -1;
-
-    if (filter_level == -1) {
-        const char* env = std::getenv("LLAMA_LOG_LEVEL");
-        filter_level = env ?
-            (std::string(env) == "info" ? GGML_LOG_LEVEL_INFO :
-             std::string(env) == "warn" ? GGML_LOG_LEVEL_WARN :
-             std::string(env) == "debug" ? GGML_LOG_LEVEL_DEBUG :
-             GGML_LOG_LEVEL_ERROR) : GGML_LOG_LEVEL_ERROR;
-    }
-
-    if (level >= filter_level) {
-        fprintf(stderr, "%s", text);
-    }
 }
 
 Runner::Runner(const std::string& modelPath) : Runner(modelPath, "", 1) {

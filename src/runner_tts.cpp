@@ -11,10 +11,10 @@
 
 #include "nrvna/runner_tts.hpp"
 #include "nrvna/logger.hpp"
+#include "llama_util.hpp"
 #include "llama.h"
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <map>
 #include <regex>
 #include <thread>
@@ -32,15 +32,6 @@ std::string TtsRunner::v3_audio_text_;
 std::string TtsRunner::v3_audio_data_;
 
 namespace {
-
-// ============================================================================
-// Env helpers
-// ============================================================================
-
-static int env_int(const char* name, int defv) {
-    if (const char* v = std::getenv(name)) return std::atoi(v);
-    return defv;
-}
 
 // ============================================================================
 // Spectral ops (from tts.cpp — pure math, safe to borrow)
@@ -389,23 +380,6 @@ and<|t_0.15|><|code_start|><|1285|><|987|><|303|><|1037|><|730|><|1164|><|502|><
 it<|t_0.09|><|code_start|><|848|><|1366|><|395|><|1601|><|1513|><|593|><|1302|><|code_end|>
 looks<|t_0.27|><|code_start|><|1281|><|1266|><|1755|><|572|><|248|><|1751|><|1257|><|695|><|1380|><|457|><|659|><|585|><|1315|><|1105|><|1776|><|736|><|24|><|736|><|654|><|1027|><|code_end|>
 lovely<|t_0.56|><|code_start|><|634|><|596|><|1766|><|1556|><|1306|><|1285|><|1481|><|1721|><|1123|><|438|><|1246|><|1251|><|795|><|659|><|1381|><|1658|><|217|><|1772|><|562|><|952|><|107|><|1129|><|1112|><|467|><|550|><|1079|><|840|><|1615|><|1469|><|1380|><|168|><|917|><|836|><|1827|><|437|><|583|><|67|><|595|><|1087|><|1646|><|1493|><|1677|><|code_end|>)";
-
-// llama.cpp log filter (reuse pattern from runner.cpp)
-void filtered_llama_log(enum ggml_log_level level, const char* text, void* /*user_data*/) {
-    if (!text || text[0] == '.' || text[0] == '\n' || text[0] == '\0') return;
-    static int filter_level = -1;
-    if (filter_level == -1) {
-        const char* env = std::getenv("LLAMA_LOG_LEVEL");
-        filter_level = env ?
-            (std::string(env) == "info" ? GGML_LOG_LEVEL_INFO :
-             std::string(env) == "warn" ? GGML_LOG_LEVEL_WARN :
-             std::string(env) == "debug" ? GGML_LOG_LEVEL_DEBUG :
-             GGML_LOG_LEVEL_ERROR) : GGML_LOG_LEVEL_ERROR;
-    }
-    if (level >= filter_level) {
-        fprintf(stderr, "%s", text);
-    }
-}
 
 } // anonymous namespace
 
