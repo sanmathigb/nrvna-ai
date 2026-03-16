@@ -30,6 +30,7 @@ void printUsage(const char* progName) {
     std::cout << "Options:\n";
     std::cout << "  --image <path>   Attach image (repeatable)\n";
     std::cout << "  --embed          Submit as embedding job (returns vector)\n";
+    std::cout << "  --tts            Submit as text-to-speech job\n";
     std::cout << "  --mode <type>    Job mode: tts (text-to-speech)\n";
     std::cout << "  -h, --help       Show this help message\n";
     std::cout << "  -v, --version    Show version\n\n";
@@ -89,6 +90,8 @@ int main(int argc, char* argv[]) {
             imagePaths.emplace_back(argv[++i]);
         } else if (arg == "--embed") {
             useEmbed = true;
+        } else if (arg == "--tts") {
+            mode = "tts";
         } else if (arg == "--mode") {
             if (i + 1 >= argc) {
                 std::cerr << "Error: --mode requires a type (e.g. tts)\n";
@@ -120,6 +123,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             if (arg == "--embed") continue;
+            if (arg == "--tts") continue;
             if (arg == "--mode") { ++i; continue; }
             if (!first) promptStream << " ";
             promptStream << argv[i];

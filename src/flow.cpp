@@ -8,6 +8,7 @@
 #include "nrvna/logger.hpp"
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 
 namespace nrvnaai {
 
@@ -36,8 +37,17 @@ std::optional<Job> Flow::latest() const noexcept {
     }
 }
 
+static bool isValidJobId(const JobId& id) noexcept {
+    if (id.empty()) return false;
+    for (char c : id) {
+        if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_') return false;
+    }
+    return true;
+}
+
 std::optional<Job> Flow::get(const JobId& id) const noexcept {
     try {
+        if (!isValidJobId(id)) return std::nullopt;
         Status jobStatus = status(id);
 
         if (jobStatus == Status::Done) {
@@ -51,6 +61,13 @@ std::optional<Job> Flow::get(const JobId& id) const noexcept {
             } else if (std::filesystem::exists(audioFile)) {
                 // Audio output — return absolute path as content
                 content = std::filesystem::absolute(audioFile).string();
+            } else if (auto embeddingFile = outputDir / "embedding.json";
+                       std::filesystem::exists(embeddingFile)) {
+                std::ifstream file(embeddingFile);
+                std::string line;
+                while (std::getline(file, line)) {
+                    content += line + "\n";
+                }
             } else {
                 LOG_DEBUG("No result file found for job: " + id);
                 return std::nullopt;
@@ -131,6 +148,7 @@ std::vector<Job> Flow::list(std::size_t max) const noexcept {
 
 Status Flow::status(const JobId& id) const noexcept {
     try {
+        if (!isValidJobId(id)) return Status::Missing;
         if (std::filesystem::exists(workspace_ / "output" / id)) {
             return Status::Done;
         }
