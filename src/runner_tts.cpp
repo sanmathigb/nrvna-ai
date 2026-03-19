@@ -665,6 +665,7 @@ TtsResult TtsRunner::run(const std::string& text) {
         llama_context_params voc_params = llama_context_default_params();
         voc_params.n_ctx = n_codes;
         voc_params.n_batch = n_codes;
+        voc_params.n_ubatch = n_codes;
         voc_params.embeddings = true;
 
         llama_context* ctx_voc = llama_init_from_model(shared_vocoder_.get(), voc_params);
@@ -691,7 +692,7 @@ TtsResult TtsRunner::run(const std::string& text) {
         llama_batch_free(voc_batch);
 
         // Get embeddings and convert to audio
-        int n_embd = llama_model_n_embd(shared_vocoder_.get());
+        int n_embd = llama_model_n_embd_out(shared_vocoder_.get());
         const float* embd = llama_get_embeddings(ctx_voc);
         if (!embd) {
             llama_free(ctx_voc);

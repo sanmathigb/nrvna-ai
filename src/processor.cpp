@@ -22,8 +22,10 @@ std::mutex g_output_mutex;
 std::string timestamp() {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
+    struct tm tm_buf;
+    localtime_r(&time, &tm_buf);
     char buf[16];
-    std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&time));
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm_buf);
     return buf;
 }
 
@@ -110,6 +112,9 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                     return ProcessResult::Success;
                 } else {
                     LOG_ERROR("Failed to finalize TTS job: " + jobId);
+                    if (!finalizeFailure(jobId, "Failed to write audio to output directory")) {
+                        LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
+                    }
                     return ProcessResult::SystemError;
                 }
             } else {
@@ -148,6 +153,9 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                     return ProcessResult::Success;
                 } else {
                     LOG_ERROR("Failed to finalize embedding job: " + jobId);
+                    if (!finalizeFailure(jobId, "Failed to write embedding to output directory")) {
+                        LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
+                    }
                     return ProcessResult::SystemError;
                 }
             } else {

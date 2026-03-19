@@ -175,6 +175,7 @@ bool Flow::exists(const JobId& id) const noexcept {
 
 std::optional<std::string> Flow::error(const JobId& id) const {
     try {
+        if (!isValidJobId(id)) return std::nullopt;
         auto errorFile = workspace_ / "failed" / id / "error.txt";
         if (!std::filesystem::exists(errorFile)) {
             return std::nullopt;
@@ -195,6 +196,7 @@ std::optional<std::string> Flow::error(const JobId& id) const {
 
 std::optional<std::string> Flow::prompt(const JobId& id) const {
     try {
+        if (!isValidJobId(id)) return std::nullopt;
         std::vector<std::filesystem::path> searchDirs = {
             workspace_ / "output" / id,
             workspace_ / "failed" / id,

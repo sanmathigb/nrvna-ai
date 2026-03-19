@@ -27,10 +27,25 @@ std::mutex Runner::model_mutex_;
 // when multiple vision encodings run simultaneously
 static std::mutex vision_encoding_mutex_;
 
-// Strip <think>...</think> blocks from reasoning models (DeepSeek-R1, QwQ, etc.)
+// Strip <think>...</think> blocks from reasoning models (DeepSeek-R1, QwQ, Qwen3, etc.)
+// Handles both closed (<think>...</think>) and unclosed (<think>... to end) blocks —
+// unclosed blocks occur when the model exhausts n_predict tokens while still reasoning.
 static std::string stripThinkBlocks(const std::string& text) {
-    static const std::regex thinkRegex("<think>[\\s\\S]*?</think>\\s*");
-    std::string result = std::regex_replace(text, thinkRegex, "");
+    std::string result = text;
+    size_t pos = 0;
+    while ((pos = result.find("<think>", pos)) != std::string::npos) {
+        size_t end = result.find("</think>", pos);
+        if (end != std::string::npos) {
+            // Closed block: remove <think>...</think> and trailing whitespace
+            end += 8; // length of "</think>"
+            while (end < result.size() && (result[end] == ' ' || result[end] == '\t' || result[end] == '\n' || result[end] == '\r'))
+                ++end;
+            result.erase(pos, end - pos);
+        } else {
+            // Unclosed block: model ran out of tokens mid-think, strip to end
+            result.erase(pos);
+        }
+    }
     // Trim leading whitespace left behind
     size_t start = result.find_first_not_of(" \t\n\r");
     return (start == std::string::npos) ? "" : result.substr(start);
@@ -86,7 +101,7 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
         mparams.n_threads = std::max(1, total_threads / std::max(1, numWorkers));
         LOG_INFO("Vision threads per worker: " + std::to_string(mparams.n_threads) +
                  " (total: " + std::to_string(total_threads) + ", workers: " + std::to_string(numWorkers) + ")");
-        mparams.verbosity = GGML_LOG_LEVEL_ERROR;
+        mparams.print_timings = false;
 
         mtmd_context* ctx = mtmd_init_from_file(mmprojPath.c_str(), shared_model_.get(), mparams);
         if (!ctx) {
