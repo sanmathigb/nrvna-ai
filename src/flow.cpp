@@ -37,7 +37,7 @@ std::optional<Job> Flow::latest() const noexcept {
     }
 }
 
-static bool isValidJobId(const JobId& id) noexcept {
+bool Flow::isValidJobId(const JobId& id) noexcept {
     if (id.empty()) return false;
     for (char c : id) {
         if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_') return false;

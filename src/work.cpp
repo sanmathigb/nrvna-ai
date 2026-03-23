@@ -258,8 +258,6 @@ bool Work::writePromptFile(const JobId& jobId, const std::string& prompt) const 
 
         file << prompt;
         file.flush();
-        file.close();
-
         return file.good();
     } catch (...) {
         return false;
@@ -326,8 +324,6 @@ bool Work::writeTypeFile(const JobId& jobId, JobType type) const noexcept {
                 break;
         }
         file.flush();
-        file.close();
-
         return file.good();
     } catch (...) {
         return false;

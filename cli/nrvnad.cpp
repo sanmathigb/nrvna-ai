@@ -55,7 +55,15 @@ struct ModelInfo {
     uintmax_t size;
 };
 
+// Forward declarations
 std::string trim(std::string value);
+std::string toLower(std::string value);
+bool isNumber(const std::string& value);
+bool containsToken(const std::string& haystack, const std::string& needle);
+std::optional<std::string> promptWorkspacePath();
+std::optional<std::filesystem::path> resolveModelPath(const std::string& modelArg);
+std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath);
+std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath);
 
 size_t countDirEntries(const std::filesystem::path& dir) {
     size_t count = 0;
@@ -233,8 +241,6 @@ std::vector<WorkspaceInfo> scanWorkspaces() {
               [](const auto& a, const auto& b) { return a.path < b.path; });
     return workspaces;
 }
-
-std::string toLower(std::string value);
 
 std::string extractShortName(const std::string& filename) {
     size_t pos = filename.find_first_of("-_.");
@@ -454,10 +460,6 @@ DashboardResult printDashboard() {
     return {selectable, models};
 }
 
-std::string toLower(std::string value);
-bool isNumber(const std::string& value);
-std::optional<std::filesystem::path> resolveModelPath(const std::string& modelArg);
-
 int promptWorkers(int defaultVal = 4) {
     std::cout << "  \033[90mWorkers [" << defaultVal << "]:\033[0m ";
     std::cout.flush();
@@ -470,11 +472,6 @@ int promptWorkers(int defaultVal = 4) {
     }
     return defaultVal;
 }
-std::optional<std::string> promptWorkspacePath();
-
-std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath);
-std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath);
-
 // Helper: select a model, ask workspace + workers, auto-detect mmproj
 std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers) {
     std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";

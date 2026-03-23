@@ -91,14 +91,10 @@ int main(int argc, char* argv[]) {
         std::cin >> jobId;
     }
 
-    // Validate job ID format (digits and underscores only)
-    if (!jobId.empty()) {
-        for (char c : jobId) {
-            if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_') {
-                std::cerr << "Invalid job ID: " << jobId << std::endl;
-                return 1;
-            }
-        }
+    // Validate job ID format
+    if (!jobId.empty() && !Flow::isValidJobId(jobId)) {
+        std::cerr << "Invalid job ID: " << jobId << std::endl;
+        return 1;
     }
 
     try {
@@ -152,9 +148,6 @@ int main(int argc, char* argv[]) {
                 return 2; // Different exit code for "not ready"
             }
 
-        } else {
-            // Should be unreachable now given logic above
-            return 1; 
         }
 
     } catch (const std::exception& e) {

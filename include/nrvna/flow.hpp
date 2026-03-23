@@ -36,6 +36,7 @@ public:
     [[nodiscard]] std::vector<Job> list(std::size_t max = 10) const noexcept;
     [[nodiscard]] Status status(const JobId& id) const noexcept;
 
+    [[nodiscard]] static bool isValidJobId(const JobId& id) noexcept;
     [[nodiscard]] bool exists(const JobId& id) const noexcept;
     [[nodiscard]] std::optional<std::string> error(const JobId& id) const;
     [[nodiscard]] std::optional<std::string> prompt(const JobId& id) const;

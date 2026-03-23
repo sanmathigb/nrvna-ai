@@ -20,7 +20,7 @@ void printUsage(const char* progName) {
     std::cout << "nrvna-ai Work Submission Tool v" << VERSION << "\n\n";
     std::cout << "Usage: " << progName << " <workspace> <prompt...> [--image <path> ...]\n";
     std::cout << "       " << progName << " <workspace> <text> --embed\n";
-    std::cout << "       " << progName << " <workspace> <text> --mode tts\n";
+    std::cout << "       " << progName << " <workspace> <text> --tts\n";
     std::cout << "       " << progName << " <workspace> -     (read prompt from stdin)\n";
     std::cout << "       " << progName << " --help | --version\n\n";
     std::cout << "Arguments:\n";
@@ -143,7 +143,12 @@ int main(int argc, char* argv[]) {
     }
 
     if (useEmbed && !mode.empty()) {
-        std::cerr << "Error: --embed and --mode are mutually exclusive\n";
+        std::cerr << "Error: --embed and --tts are mutually exclusive\n";
+        return 1;
+    }
+
+    if (mode == "tts" && !imagePaths.empty()) {
+        std::cerr << "Error: --tts and --image are mutually exclusive\n";
         return 1;
     }
 

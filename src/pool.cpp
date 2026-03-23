@@ -37,7 +37,6 @@ bool Pool::start(JobProcessor processor) {
         workerThreads_.reserve(workers_);
         for (int i = 0; i < workers_; ++i) {
             workerThreads_.emplace_back(&Pool::workerLoop, this, i);
-            // LOG_DEBUG("Started worker thread: Worker-" + std::to_string(i));
         }
         
         LOG_INFO("Pool started successfully with " + std::to_string(workers_) + " worker threads");
