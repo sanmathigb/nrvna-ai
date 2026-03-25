@@ -17,10 +17,11 @@ add_subdirectory(third_party/llama.cpp)
 
 # Add mtmd library for multimodal support
 add_subdirectory(third_party/llama.cpp/tools/mtmd)
-if (TARGET llama-mtmd-cli)
-    # mtmd CLI is not required by nrvna runtime; exclude it from default builds.
-    set_target_properties(llama-mtmd-cli PROPERTIES EXCLUDE_FROM_ALL TRUE)
-endif()
+foreach(_tgt llama-mtmd-cli llama-mtmd-debug llama-llava-cli llama-gemma3-cli llama-minicpmv-cli llama-qwen2vl-cli)
+    if (TARGET ${_tgt})
+        set_target_properties(${_tgt} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+endforeach()
 
 # Core library sources
 set(NRVNA_SOURCES
