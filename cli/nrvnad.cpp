@@ -5,6 +5,7 @@
  */
 
 #include "nrvna/server.hpp"
+#include "nrvna/runner.hpp"
 #include "nrvna/logger.hpp"
 #include <iostream>
 #include <iomanip>
@@ -49,7 +50,7 @@ struct WorkspaceInfo {
     bool daemonStopped = false;   // daemon was running but stopped (stale pid)
 };
 
-struct ModelInfo {
+struct DashboardModelInfo {
     std::string filename;
     std::string shortName;
     uintmax_t size;
@@ -251,8 +252,8 @@ std::string extractShortName(const std::string& filename) {
     return name;
 }
 
-std::vector<ModelInfo> scanModels() {
-    std::vector<ModelInfo> models;
+std::vector<DashboardModelInfo> scanModels() {
+    std::vector<DashboardModelInfo> models;
     std::filesystem::path modelsDir = g_models_dir;
 
     if (!std::filesystem::exists(modelsDir)) return models;
@@ -265,7 +266,7 @@ std::vector<ModelInfo> scanModels() {
         std::string lower = toLower(filename);
         if (lower.find("vocoder") != std::string::npos || lower.find("wavtokenizer") != std::string::npos) continue;
 
-        ModelInfo m;
+        DashboardModelInfo m;
         m.filename = filename;
         m.shortName = extractShortName(filename);
         m.size = entry.file_size();
@@ -303,7 +304,7 @@ std::optional<std::string> latestJobId(const std::filesystem::path& workspace) {
 
 struct DashboardResult {
     std::vector<WorkspaceInfo> workspaces;  // All non-running workspaces (for interactive start)
-    std::vector<ModelInfo> models;
+    std::vector<DashboardModelInfo> models;
 };
 
 struct DaemonSelection {
@@ -473,7 +474,7 @@ int promptWorkers(int defaultVal = 4) {
     return defaultVal;
 }
 // Helper: select a model, ask workspace + workers, auto-detect mmproj
-std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers) {
+std::optional<DaemonSelection> selectModel(const DashboardModelInfo& model, int& workers) {
     std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
 
     auto workspace = promptWorkspacePath();
@@ -501,7 +502,7 @@ std::optional<DaemonSelection> selectModel(const ModelInfo& model, int& workers)
 
 std::optional<DaemonSelection> promptUnifiedSelection(
     const std::vector<WorkspaceInfo>& workspaces,
-    const std::vector<ModelInfo>& models,
+    const std::vector<DashboardModelInfo>& models,
     int& workers
 ) {
     size_t wsCount = workspaces.size();
@@ -702,7 +703,7 @@ void applyDefaultEnv(const char* key,
     applied[key] = value;
 }
 
-void applyModelDefaults(const std::filesystem::path& modelPath) {
+void applyModelDefaults(const std::filesystem::path& modelPath, const ModelInfo& info) {
     std::string filename = toLower(modelPath.filename().string());
     std::unordered_set<std::string> lockedKeys;
 
@@ -711,20 +712,48 @@ void applyModelDefaults(const std::filesystem::path& modelPath) {
 
     std::unordered_map<std::string, std::string> applied;
 
-    // Sampling defaults - let runner.cpp use model-aware defaults
-    // Only override temperature for specific model types
-    if (containsToken(filename, "coder") || containsToken(filename, "code")) {
-        applyDefaultEnv("NRVNA_TEMP", "0.3", lockedKeys, applied);  // more deterministic for code
-    } else if (containsToken(filename, "deepseek") || containsToken(filename, "r1")) {
-        applyDefaultEnv("NRVNA_TEMP", "0.6", lockedKeys, applied);  // reasoning models
+    // Temperature policy: metadata-first, filename as fallback
+    std::string archLower = toLower(info.arch);
+    std::string descLower = toLower(info.desc);
+    if (containsToken(archLower, "code") || containsToken(descLower, "coder") ||
+        containsToken(filename, "coder") || containsToken(filename, "code")) {
+        applyDefaultEnv("NRVNA_TEMP", "0.3", lockedKeys, applied);
+    } else if (archLower == "deepseek" || containsToken(descLower, "r1") ||
+               containsToken(filename, "deepseek") || containsToken(filename, "r1")) {
+        applyDefaultEnv("NRVNA_TEMP", "0.6", lockedKeys, applied);
     }
-    // No artificial n_predict limits - runner.cpp uses model's context size
+
+    // Context size: buildSamplingConfig() handles min(n_ctx_train, NRVNA_MAX_CTX default 8192).
+    // Don't set NRVNA_MAX_CTX here — that would impose a policy cap on long-context models.
+
+    // VRAM warning: model > 4GB with GPU layers enabled
+    constexpr uint64_t VRAM_4GB = 4ULL * 1024 * 1024 * 1024;
+    if (info.model_size_bytes > VRAM_4GB) {
+        int gpuLayers = 99;
+        #if !defined(__APPLE__)
+            gpuLayers = 0;
+        #endif
+        if (std::getenv("NRVNA_GPU_LAYERS")) {
+            gpuLayers = std::atoi(std::getenv("NRVNA_GPU_LAYERS"));
+        }
+        if (gpuLayers > 0) {
+            double gb = static_cast<double>(info.model_size_bytes) / (1024.0 * 1024.0 * 1024.0);
+            LOG_WARN("Model size " + std::to_string(gb).substr(0, 4) + " GB may exceed efficient GPU fit (4 GB VRAM). "
+                     "Set NRVNA_GPU_LAYERS=0 to force CPU if inference produces garbage.");
+        }
+    }
+
+    // Embed model info
+    if (info.n_embd_out > 0 && info.has_encoder && !info.has_decoder) {
+        LOG_INFO("Embedding model detected: output dim=" + std::to_string(info.n_embd_out));
+    }
 
     if (!applied.empty()) {
-        LOG_INFO("Applied default params: " + std::to_string(applied.size()));
+        std::string summary = "Applied defaults:";
         for (const auto& entry : applied) {
-            LOG_DEBUG("  " + entry.first + "=" + entry.second);
+            summary += " " + entry.first + "=" + entry.second;
         }
+        LOG_INFO(summary);
     }
 }
 
@@ -853,7 +882,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    applyModelDefaults(std::filesystem::path(modelPath));
+    // Probe GGUF metadata before server start
+    ModelInfo probeInfo = Runner::probeModelInfo(modelPath);
+    if (!probeInfo.valid) {
+        std::cerr << "Error: Failed to probe model metadata: " << modelPath << "\n";
+        return 1;
+    }
+
+    applyModelDefaults(std::filesystem::path(modelPath), probeInfo);
     recordWorkspacePath(std::filesystem::path(workspace));
 
     std::cout << "\033[2J\033[1;1H";
@@ -861,6 +897,18 @@ int main(int argc, char* argv[]) {
     std::cout << "  \033[1mnrvna\033[0m " << VERSION << "                        \033[90masync · inference · primitive\033[0m\n";
     std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
     std::cout << "\n";
+
+    // Model info line
+    {
+        double gb = static_cast<double>(probeInfo.model_size_bytes) / (1024.0 * 1024.0 * 1024.0);
+        std::string sizeStr = std::to_string(gb).substr(0, 3) + " GB";
+        std::cout << "  \033[90mModel: " << probeInfo.desc
+                  << ", ctx=" << probeInfo.n_ctx_train
+                  << ", " << sizeStr
+                  << ", template=" << (probeInfo.has_chat_template ? "yes" : "no")
+                  << ", encoder=" << (probeInfo.has_encoder ? "yes" : "no")
+                  << "\033[0m\n";
+    }
 
     std::string modelName = std::filesystem::path(modelPath).filename().string();
     std::cout << "  Loading " << modelName << "\n" << std::flush;

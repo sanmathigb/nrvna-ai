@@ -21,6 +21,18 @@ struct mtmd_bitmap;
 
 namespace nrvnaai {
 
+struct ModelInfo {
+    bool        valid = false;
+    std::string desc;                 // llama_model_desc() — display only, not for policy
+    std::string arch;                 // general.architecture — "llama", "qwen2", "bert", etc.
+    int         n_ctx_train = 0;      // training context length
+    uint64_t    model_size_bytes = 0; // total parameter bytes
+    bool        has_chat_template = false;
+    bool        has_encoder = false;
+    bool        has_decoder = true;
+    int         n_embd_out = 0;       // embedding output dimension
+};
+
 struct RunResult {
     bool ok = false;
     std::string output;
@@ -49,6 +61,9 @@ public:
     [[nodiscard]] EmbedResult embed(const std::string& text);
     [[nodiscard]] bool isMultimodal() const noexcept { return mtmd_ctx_ != nullptr; }
 
+    // Probe GGUF metadata without starting a server — loads model briefly, returns info
+    [[nodiscard]] static ModelInfo probeModelInfo(const std::string& modelPath);
+
 private:
     struct SamplingConfig {
         int n_predict = 0;
@@ -66,6 +81,15 @@ private:
     static std::shared_ptr<llama_model> shared_model_;
     static std::string current_model_path_;
     static std::mutex model_mutex_;
+
+    // GGUF sampling defaults — resolved once at model load, used as fallbacks in env_*() calls.
+    // If GGUF has no value, these hold the hardcoded defaults.
+    static float gguf_temp_;
+    static int   gguf_top_k_;
+    static float gguf_top_p_;
+    static float gguf_min_p_;
+    static float gguf_repeat_penalty_;
+    static int   gguf_repeat_last_n_;
 
     // Per-instance mtmd context for thread-safe vision processing
     std::shared_ptr<mtmd_context> mtmd_owned_;

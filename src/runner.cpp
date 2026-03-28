@@ -22,6 +22,14 @@ std::shared_ptr<llama_model> Runner::shared_model_ = nullptr;
 std::string Runner::current_model_path_ = "";
 std::mutex Runner::model_mutex_;
 
+// GGUF sampling defaults — hardcoded fallbacks until model is loaded
+float Runner::gguf_temp_           = 0.8f;
+int   Runner::gguf_top_k_          = 40;
+float Runner::gguf_top_p_          = 0.9f;
+float Runner::gguf_min_p_          = 0.05f;
+float Runner::gguf_repeat_penalty_ = 1.1f;
+int   Runner::gguf_repeat_last_n_  = 64;
+
 // Vision encoding mutex - serializes mtmd_helper_eval_chunks across all workers
 // because the underlying GGML compute graph has shared state that corrupts
 // when multiple vision encodings run simultaneously
@@ -49,6 +57,71 @@ static std::string stripThinkBlocks(const std::string& text) {
     // Trim leading whitespace left behind
     size_t start = result.find_first_not_of(" \t\n\r");
     return (start == std::string::npos) ? "" : result.substr(start);
+}
+
+// Read GGUF metadata helpers
+static std::string readModelStrMeta(const llama_model* model, const char* key) {
+    char buf[256] = {};
+    int32_t n = llama_model_meta_val_str(model, key, buf, sizeof(buf));
+    return (n > 0) ? std::string(buf, static_cast<size_t>(n)) : std::string();
+}
+
+static float readModelFloatMeta(const llama_model* model, const char* key, float fallback) {
+    char buf[64] = {};
+    int32_t n = llama_model_meta_val_str(model, key, buf, sizeof(buf));
+    if (n > 0) {
+        try { return std::stof(std::string(buf, static_cast<size_t>(n))); }
+        catch (...) {}
+    }
+    return fallback;
+}
+
+static int readModelIntMeta(const llama_model* model, const char* key, int fallback) {
+    char buf[64] = {};
+    int32_t n = llama_model_meta_val_str(model, key, buf, sizeof(buf));
+    if (n > 0) {
+        try { return std::stoi(std::string(buf, static_cast<size_t>(n))); }
+        catch (...) {}
+    }
+    return fallback;
+}
+
+// Populate ModelInfo from a loaded model pointer
+static ModelInfo buildModelInfoFromModel(const llama_model* model) {
+    ModelInfo info;
+    info.valid = true;
+
+    char desc_buf[256] = {};
+    llama_model_desc(model, desc_buf, sizeof(desc_buf));
+    info.desc = desc_buf;
+
+    info.arch = readModelStrMeta(model, "general.architecture");
+    info.n_ctx_train = llama_model_n_ctx_train(model);
+    info.model_size_bytes = llama_model_size(model);
+    info.has_chat_template = (llama_model_chat_template(model, nullptr) != nullptr);
+    info.has_encoder = llama_model_has_encoder(model);
+    info.has_decoder = llama_model_has_decoder(model);
+    info.n_embd_out = llama_model_n_embd_out(model);
+
+    return info;
+}
+
+ModelInfo Runner::probeModelInfo(const std::string& modelPath) {
+    llama_log_set(filtered_llama_log, nullptr);
+    ggml_backend_load_all();
+
+    llama_model_params params = llama_model_default_params();
+    params.n_gpu_layers = 0;  // CPU only for probing — fast, no GPU contention
+
+    llama_model* model = llama_model_load_from_file(modelPath.c_str(), params);
+    if (!model) {
+        LOG_ERROR("Failed to probe model: " + modelPath);
+        return ModelInfo{};
+    }
+
+    ModelInfo info = buildModelInfoFromModel(model);
+    llama_model_free(model);
+    return info;
 }
 
 Runner::Runner(const std::string& modelPath) : Runner(modelPath, "", 1) {
@@ -81,6 +154,33 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
 
             shared_model_ = std::shared_ptr<llama_model>(model, llama_model_free);
             current_model_path_ = modelPath;
+
+            // Resolve GGUF sampling defaults once — log only when model provides a value
+            auto resolveGgufFloat = [&](const char* key, float hardcoded, float& out) {
+                float v = readModelFloatMeta(model, key, -1.0f);
+                if (v >= 0.0f) {
+                    LOG_INFO(std::string("Model sampling hint: ") + key + "=" + std::to_string(v));
+                    out = v;
+                } else {
+                    out = hardcoded;
+                }
+            };
+            auto resolveGgufInt = [&](const char* key, int hardcoded, int& out) {
+                int v = readModelIntMeta(model, key, -1);
+                if (v >= 0) {
+                    LOG_INFO(std::string("Model sampling hint: ") + key + "=" + std::to_string(v));
+                    out = v;
+                } else {
+                    out = hardcoded;
+                }
+            };
+            resolveGgufFloat("general.sampling.temp",           0.8f,  gguf_temp_);
+            resolveGgufInt  ("general.sampling.top_k",          40,    gguf_top_k_);
+            resolveGgufFloat("general.sampling.top_p",          0.9f,  gguf_top_p_);
+            resolveGgufFloat("general.sampling.min_p",          0.05f, gguf_min_p_);
+            resolveGgufFloat("general.sampling.penalty_repeat", 1.1f,  gguf_repeat_penalty_);
+            resolveGgufInt  ("general.sampling.penalty_last_n", 64,    gguf_repeat_last_n_);
+
             LOG_INFO("Model loaded successfully");
         }
     }
@@ -126,18 +226,20 @@ Runner::~Runner() {
 
 Runner::SamplingConfig Runner::buildSamplingConfig() const {
     SamplingConfig config;
-    const int n_ctx_train = llama_model_n_ctx_train(shared_model_.get());
+    const llama_model* model = shared_model_.get();
+    const int n_ctx_train = llama_model_n_ctx_train(model);
 
-    config.temp = env_float("NRVNA_TEMP", 0.8f);
-    config.top_k = env_int("NRVNA_TOP_K", 40);
-    config.top_p = env_float("NRVNA_TOP_P", 0.9f);
-    config.min_p = env_float("NRVNA_MIN_P", 0.05f);
-    config.repeat_penalty = env_float("NRVNA_REPEAT_PENALTY", 1.1f);
-    config.repeat_last_n = env_int("NRVNA_REPEAT_LAST_N", 64);
+    // Precedence: env var > GGUF metadata (cached at model load) > hardcoded default
+    config.temp           = env_float("NRVNA_TEMP",           gguf_temp_);
+    config.top_k          = env_int  ("NRVNA_TOP_K",          gguf_top_k_);
+    config.top_p          = env_float("NRVNA_TOP_P",          gguf_top_p_);
+    config.min_p          = env_float("NRVNA_MIN_P",          gguf_min_p_);
+    config.repeat_penalty = env_float("NRVNA_REPEAT_PENALTY", gguf_repeat_penalty_);
+    config.repeat_last_n  = env_int  ("NRVNA_REPEAT_LAST_N",  gguf_repeat_last_n_);
     config.seed = static_cast<uint32_t>(env_int("NRVNA_SEED", 0));
 
     config.max_ctx = std::min(n_ctx_train, env_int("NRVNA_MAX_CTX", 8192));
-    config.n_predict = env_int("NRVNA_PREDICT", 2048);  // Reasonable default, not max_ctx/2
+    config.n_predict = env_int("NRVNA_PREDICT", 2048);
 
     LOG_INFO("Model context: " + std::to_string(n_ctx_train) +
              ", using max_ctx=" + std::to_string(config.max_ctx) +
