@@ -225,6 +225,31 @@ std::optional<std::string> Flow::prompt(const JobId& id) const {
     }
 }
 
+std::optional<JobMeta> Flow::meta(const JobId& id) const noexcept {
+    try {
+        if (!isValidJobId(id)) return std::nullopt;
+        std::vector<std::filesystem::path> searchDirs = {
+            workspace_ / "output" / id,
+            workspace_ / "failed" / id,
+            workspace_ / "processing" / id,
+            workspace_ / "input" / "ready" / id,
+            workspace_ / "input" / "writing" / id
+        };
+
+        for (const auto& dir : searchDirs) {
+            if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
+                auto meta = readMetaJson(dir);
+                if (meta.has_value()) {
+                    return meta;
+                }
+            }
+        }
+        return std::nullopt;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 std::string Flow::readResultContent(const JobId& id) const {
     auto resultFile = workspace_ / "output" / id / "result.txt";
     std::ifstream file(resultFile);

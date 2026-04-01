@@ -5,6 +5,7 @@
  */
 
 #include "nrvna/work.hpp"
+#include "nrvna/flow.hpp"
 #include "nrvna/logger.hpp"
 #include <filesystem>
 #include <iostream>
@@ -32,6 +33,8 @@ void printUsage(const char* progName) {
     std::cout << "  --embed          Submit as embedding job (returns vector)\n";
     std::cout << "  --tts            Submit as text-to-speech job\n";
     std::cout << "  --mode <type>    Job mode: tts (text-to-speech)\n";
+    std::cout << "  --parent <id>    Optional parent job ID\n";
+    std::cout << "  --tag <tag>      Optional tag (repeatable)\n";
     std::cout << "  -h, --help       Show this help message\n";
     std::cout << "  -v, --version    Show version\n\n";
     std::cout << "Environment Variables:\n";
@@ -71,6 +74,16 @@ int main(int argc, char* argv[]) {
     std::vector<std::filesystem::path> imagePaths;
     bool useEmbed = false;
     std::string mode;
+    SubmitOptions submitOptions;
+
+    auto isValidTag = [](const std::string& tag) {
+        if (tag.empty() || tag.size() > 64) return false;
+        for (char c : tag) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (!std::isalnum(uc) && c != '-' && c != '_') return false;
+        }
+        return true;
+    };
 
     // Check for stdin input
     bool readStdin = false;
@@ -88,6 +101,27 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             imagePaths.emplace_back(argv[++i]);
+        } else if (arg == "--parent") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --parent requires a job ID\n";
+                return 1;
+            }
+            submitOptions.parent = argv[++i];
+            if (!Flow::isValidJobId(submitOptions.parent)) {
+                std::cerr << "Error: invalid parent job ID\n";
+                return 1;
+            }
+        } else if (arg == "--tag") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --tag requires a value\n";
+                return 1;
+            }
+            std::string tag = argv[++i];
+            if (!isValidTag(tag)) {
+                std::cerr << "Error: invalid tag '" << tag << "'\n";
+                return 1;
+            }
+            submitOptions.tags.push_back(tag);
         } else if (arg == "--embed") {
             useEmbed = true;
         } else if (arg == "--tts") {
@@ -122,9 +156,12 @@ int main(int argc, char* argv[]) {
                 ++i;
                 continue;
             }
+            if (arg == "--parent" || arg == "--tag" || arg == "--mode") {
+                ++i;
+                continue;
+            }
             if (arg == "--embed") continue;
             if (arg == "--tts") continue;
-            if (arg == "--mode") { ++i; continue; }
             if (!first) promptStream << " ";
             promptStream << argv[i];
             first = false;
@@ -132,7 +169,7 @@ int main(int argc, char* argv[]) {
         prompt = promptStream.str();
     }
 
-    if (prompt.empty()) {
+    if (prompt.empty() && !(useEmbed && !imagePaths.empty())) {
         std::cerr << "Error: Empty prompt provided\n";
         return 1;
     }
@@ -157,13 +194,15 @@ int main(int argc, char* argv[]) {
 
         SubmitResult result;
         if (mode == "tts") {
-            result = work.submit(prompt, JobType::Tts);
+            result = work.submit(prompt, JobType::Tts, submitOptions);
+        } else if (useEmbed && !imagePaths.empty()) {
+            result = work.submit(prompt, imagePaths, JobType::Embed, submitOptions);
         } else if (useEmbed) {
-            result = work.submit(prompt, JobType::Embed);
+            result = work.submit(prompt, JobType::Embed, submitOptions);
         } else if (!imagePaths.empty()) {
-            result = work.submit(prompt, imagePaths);
+            result = work.submit(prompt, imagePaths, submitOptions);
         } else {
-            result = work.submit(prompt);
+            result = work.submit(prompt, JobType::Text, submitOptions);
         }
 
         if (result.ok) {

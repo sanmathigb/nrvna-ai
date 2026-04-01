@@ -33,6 +33,16 @@ std::string TtsRunner::v3_audio_data_;
 
 namespace {
 
+void restrictModelToCpu(llama_model_params& params) {
+    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    static ggml_backend_dev_t cpu_only_devices[2] = { nullptr, nullptr };
+    cpu_only_devices[0] = cpu_dev;
+    cpu_only_devices[1] = nullptr;
+    if (cpu_dev) {
+        params.devices = cpu_only_devices;
+    }
+}
+
 // ============================================================================
 // Spectral ops (from tts.cpp — pure math, safe to borrow)
 // ============================================================================
@@ -397,11 +407,9 @@ TtsRunner::TtsRunner(const std::string& modelPath, const std::string& vocoderPat
     if (!shared_tts_model_ || current_tts_model_path_ != modelPath) {
         LOG_INFO("Loading TTS model: " + modelPath);
         llama_model_params model_params = llama_model_default_params();
-#if defined(__APPLE__)
-        model_params.n_gpu_layers = env_int("NRVNA_GPU_LAYERS", 99);
-#else
-        model_params.n_gpu_layers = env_int("NRVNA_GPU_LAYERS", 0);
-#endif
+        // TTS: always CPU — discrete Metal GPU hangs on longer sequences
+        model_params.n_gpu_layers = 0;
+        restrictModelToCpu(model_params);
         llama_model* model = llama_model_load_from_file(modelPath.c_str(), model_params);
         if (!model) {
             throw std::runtime_error("Failed to load TTS model: " + modelPath);
@@ -515,6 +523,7 @@ TtsRunner::TtsRunner(const std::string& modelPath, const std::string& vocoderPat
         // Vocoder is tiny (~50MB) and llama_encode with embeddings mode
         // fails on Metal without compute (pre-M1 Macs). CPU-only is fine.
         model_params.n_gpu_layers = 0;
+        restrictModelToCpu(model_params);
         llama_model* model = llama_model_load_from_file(vocoderPath.c_str(), model_params);
         if (!model) {
             throw std::runtime_error("Failed to load vocoder: " + vocoderPath);
@@ -580,16 +589,27 @@ TtsResult TtsRunner::run(const std::string& text) {
         ctx_params.n_ctx = n_ctx;
         ctx_params.n_batch = env_int("NRVNA_BATCH", 8192);
         ctx_params.no_perf = false;
+        // TTS: CPU-only — model loaded with n_gpu_layers=0, context must match
+        ctx_params.offload_kqv = false;
+        ctx_params.op_offload = false;
 
         llama_context* ctx_ttc = llama_init_from_model(shared_tts_model_.get(), ctx_params);
         if (!ctx_ttc) {
             return {false, {}, 24000, "Failed to create TTS context"};
         }
 
-        // Build sampler — TTS uses top_k=4 only
+        // Build sampler — TTS uses top_k=4 (matches upstream tts.cpp)
+        // Optional repetition penalty for narration stability
         auto sparams = llama_sampler_chain_default_params();
         sparams.no_perf = false;
         llama_sampler* smpl = llama_sampler_chain_init(sparams);
+
+        float tts_repeat = env_float("NRVNA_TTS_REPEAT_PENALTY", 0.0f);
+        if (tts_repeat > 0.0f) {
+            int tts_repeat_n = env_int("NRVNA_TTS_REPEAT_LAST_N", 128);
+            llama_sampler_chain_add(smpl, llama_sampler_init_penalties(tts_repeat_n, tts_repeat, 0.0f, 0.0f));
+        }
+
         llama_sampler_chain_add(smpl, llama_sampler_init_top_k(4));
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(env_int("NRVNA_SEED", 0)));
 
@@ -667,6 +687,9 @@ TtsResult TtsRunner::run(const std::string& text) {
         voc_params.n_batch = n_codes;
         voc_params.n_ubatch = n_codes;
         voc_params.embeddings = true;
+        // Vocoder: CPU-only — model loaded with n_gpu_layers=0, context must match
+        voc_params.offload_kqv = false;
+        voc_params.op_offload = false;
 
         llama_context* ctx_voc = llama_init_from_model(shared_vocoder_.get(), voc_params);
         if (!ctx_voc) {
@@ -704,10 +727,14 @@ TtsResult TtsRunner::run(const std::string& text) {
 
         llama_free(ctx_voc);
 
-        // Zero out first 0.25 seconds (artifact suppression, from tts.cpp)
-        int silence_samples = std::min(static_cast<int>(audio.size()), 24000 / 4);
-        for (int i = 0; i < silence_samples; ++i) {
-            audio[i] = 0.0f;
+        // Mute start of audio to suppress onset artifacts (from tts.cpp)
+        // NRVNA_TTS_MUTE_MS=0 disables for narration (avoids clipping chunk starts)
+        int mute_ms = env_int("NRVNA_TTS_MUTE_MS", 250);
+        if (mute_ms > 0) {
+            int silence_samples = std::min(static_cast<int>(audio.size()), 24000 * mute_ms / 1000);
+            for (int i = 0; i < silence_samples; ++i) {
+                audio[i] = 0.0f;
+            }
         }
 
         LOG_INFO("TTS generated " + std::to_string(audio.size()) + " audio samples");

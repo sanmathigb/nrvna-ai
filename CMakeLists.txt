@@ -34,6 +34,7 @@ set(NRVNA_SOURCES
     src/flow.cpp
     src/runner.cpp
     src/runner_tts.cpp
+    src/meta.cpp
 )
 
 # Core library

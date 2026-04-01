@@ -86,6 +86,16 @@ static int readModelIntMeta(const llama_model* model, const char* key, int fallb
     return fallback;
 }
 
+static void restrictModelToCpu(llama_model_params& params) {
+    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    static ggml_backend_dev_t cpu_only_devices[2] = { nullptr, nullptr };
+    cpu_only_devices[0] = cpu_dev;
+    cpu_only_devices[1] = nullptr;
+    if (cpu_dev) {
+        params.devices = cpu_only_devices;
+    }
+}
+
 // Populate ModelInfo from a loaded model pointer
 static ModelInfo buildModelInfoFromModel(const llama_model* model) {
     ModelInfo info;
@@ -112,6 +122,7 @@ ModelInfo Runner::probeModelInfo(const std::string& modelPath) {
 
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = 0;  // CPU only for probing — fast, no GPU contention
+    restrictModelToCpu(params);
 
     llama_model* model = llama_model_load_from_file(modelPath.c_str(), params);
     if (!model) {
@@ -145,6 +156,9 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
             #else
                 model_params.n_gpu_layers = env_int("NRVNA_GPU_LAYERS", 0);
             #endif
+            if (model_params.n_gpu_layers <= 0) {
+                restrictModelToCpu(model_params);
+            }
 
             llama_model* model = llama_model_load_from_file(modelPath.c_str(), model_params);
             if (!model) {
@@ -190,11 +204,7 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
     if (!mmprojPath.empty()) {
         LOG_INFO("Loading mmproj: " + mmprojPath);
         mtmd_context_params mparams = mtmd_context_params_default();
-        #if defined(__APPLE__)
-            mparams.use_gpu = true;
-        #else
-            mparams.use_gpu = env_int("NRVNA_GPU_LAYERS", 0) > 0;
-        #endif
+        mparams.use_gpu = env_int("NRVNA_GPU_LAYERS", 0) > 0;
 
         // Divide threads among workers to prevent parallel vision corruption
         int total_threads = std::thread::hardware_concurrency();
@@ -253,6 +263,11 @@ void Runner::buildContextParams(int n_prompt, const SamplingConfig& config, llam
     params.n_ctx = std::min(n_prompt + config.n_predict + 64, config.max_ctx);
     params.n_batch = env_int("NRVNA_BATCH", 2048);  // Match reference CLI default
     params.no_perf = false;
+
+    if (env_int("NRVNA_GPU_LAYERS", 0) <= 0) {
+        params.offload_kqv = false;
+        params.op_offload = false;
+    }
 }
 
 llama_sampler* Runner::buildSampler(const SamplingConfig& config) const {
@@ -305,6 +320,10 @@ EmbedResult Runner::embed(const std::string& text) {
         ctx_params.n_batch = tokens.size();
         ctx_params.embeddings = true;
         ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;  // Mean pooling for sentence embeddings
+        if (env_int("NRVNA_GPU_LAYERS", 0) <= 0) {
+            ctx_params.offload_kqv = false;
+            ctx_params.op_offload = false;
+        }
 
         llama_context* ctx = llama_init_from_model(shared_model_.get(), ctx_params);
         if (!ctx) {
@@ -341,6 +360,130 @@ EmbedResult Runner::embed(const std::string& text) {
     } catch (const std::exception& e) {
         LOG_ERROR("Embedding error: " + std::string(e.what()));
         return {false, {}, "Embedding error: " + std::string(e.what())};
+    }
+}
+
+EmbedResult Runner::embedVision(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths) {
+    if (!shared_model_) {
+        return {false, {}, "Model not loaded"};
+    }
+
+    if (!mtmd_ctx_) {
+        return {false, {}, "Vision embedding requires --mmproj flag"};
+    }
+
+    if (imagePaths.empty()) {
+        return {false, {}, "No images provided for vision embedding"};
+    }
+
+    mtmd_input_chunks* chunks = nullptr;
+    std::vector<mtmd_bitmap*> bitmaps;
+    llama_context* ctx = nullptr;
+    try {
+        const char* marker = mtmd_default_marker();
+        std::string formatted_prompt = formatMultimodalPrompt(prompt, imagePaths.size(), marker);
+
+        bitmaps = loadImages(imagePaths);
+        if (bitmaps.empty()) {
+            return {false, {}, "Failed to load image(s)"};
+        }
+
+        mtmd_input_text text;
+        text.text = formatted_prompt.c_str();
+        text.add_special = true;
+        text.parse_special = true;
+
+        chunks = mtmd_input_chunks_init();
+        if (!chunks) {
+            freeBitmaps(bitmaps);
+            return {false, {}, "Failed to init image chunks"};
+        }
+
+        std::vector<const mtmd_bitmap*> bitmap_ptrs;
+        bitmap_ptrs.reserve(bitmaps.size());
+        for (auto* bmp : bitmaps) {
+            bitmap_ptrs.push_back(bmp);
+        }
+
+        int32_t res = mtmd_tokenize(mtmd_ctx_, chunks, &text, bitmap_ptrs.data(), bitmap_ptrs.size());
+        if (res != 0) {
+            mtmd_input_chunks_free(chunks);
+            chunks = nullptr;
+            freeBitmaps(bitmaps);
+            return {false, {}, "Failed to tokenize multimodal prompt"};
+        }
+
+        const int n_prompt = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
+        llama_context_params ctx_params = llama_context_default_params();
+        ctx_params.n_ctx = std::max(n_prompt + 8, 128);
+        ctx_params.n_batch = std::max(1, std::min(n_prompt, env_int("NRVNA_BATCH", 2048)));
+        ctx_params.embeddings = true;
+        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        ctx_params.no_perf = false;
+        if (env_int("NRVNA_GPU_LAYERS", 0) <= 0) {
+            ctx_params.offload_kqv = false;
+            ctx_params.op_offload = false;
+        }
+
+        ctx = llama_init_from_model(shared_model_.get(), ctx_params);
+        if (!ctx) {
+            mtmd_input_chunks_free(chunks);
+            chunks = nullptr;
+            freeBitmaps(bitmaps);
+            return {false, {}, "Failed to create embedding context"};
+        }
+
+        llama_pos n_past = 0;
+        {
+            std::lock_guard<std::mutex> vision_lock(vision_encoding_mutex_);
+            if (mtmd_helper_eval_chunks(mtmd_ctx_, ctx, chunks, 0, 0, ctx_params.n_batch, true, &n_past) != 0) {
+                llama_free(ctx);
+                mtmd_input_chunks_free(chunks);
+                chunks = nullptr;
+                freeBitmaps(bitmaps);
+                return {false, {}, "Failed to eval multimodal prompt"};
+            }
+        }
+
+        mtmd_input_chunks_free(chunks);
+        chunks = nullptr;
+        freeBitmaps(bitmaps);
+
+        float* emb = llama_get_embeddings_seq(ctx, 0);
+        if (!emb) {
+            emb = llama_get_embeddings_ith(ctx, -1);
+        }
+        if (!emb) {
+            llama_free(ctx);
+            return {false, {}, "Failed to get multimodal embeddings"};
+        }
+
+        int n_embd = llama_model_n_embd_out(shared_model_.get());
+        if (n_embd <= 0) {
+            n_embd = llama_model_n_embd(shared_model_.get());
+        }
+        if (n_embd <= 0) {
+            llama_free(ctx);
+            return {false, {}, "Invalid embedding dimension"};
+        }
+
+        std::vector<float> embedding(emb, emb + n_embd);
+        llama_free(ctx);
+
+        LOG_INFO("Generated multimodal embedding with " + std::to_string(n_embd) +
+                 " dimensions from " + std::to_string(imagePaths.size()) + " image(s)");
+        return {true, std::move(embedding), ""};
+
+    } catch (const std::exception& e) {
+        if (ctx) {
+            llama_free(ctx);
+        }
+        if (chunks) {
+            mtmd_input_chunks_free(chunks);
+        }
+        freeBitmaps(bitmaps);
+        LOG_ERROR("Vision embedding error: " + std::string(e.what()));
+        return {false, {}, "Vision embedding error: " + std::string(e.what())};
     }
 }
 

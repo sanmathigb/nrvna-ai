@@ -59,6 +59,7 @@ public:
     [[nodiscard]] RunResult run(const std::string& prompt);
     [[nodiscard]] RunResult run(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
     [[nodiscard]] EmbedResult embed(const std::string& text);
+    [[nodiscard]] EmbedResult embedVision(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
     [[nodiscard]] bool isMultimodal() const noexcept { return mtmd_ctx_ != nullptr; }
 
     // Probe GGUF metadata without starting a server — loads model briefly, returns info

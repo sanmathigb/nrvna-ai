@@ -5,6 +5,7 @@
  */
 
 #include "nrvna/work.hpp"
+#include "nrvna/meta.hpp"
 #include "nrvna/logger.hpp"
 #include <filesystem>
 #include <fstream>
@@ -89,6 +90,15 @@ bool validateImagePath(const std::filesystem::path& path, SubmissionError& code,
     }
     return true;
 }
+
+bool isValidTag(const std::string& tag) {
+    if (tag.empty() || tag.size() > 64) {
+        return false;
+    }
+    return std::all_of(tag.begin(), tag.end(), [](unsigned char c) {
+        return std::isalnum(c) || c == '-' || c == '_';
+    });
+}
 }
 
 Work::Work(const std::filesystem::path& workspace, bool createIfMissing)
@@ -99,6 +109,10 @@ Work::Work(const std::filesystem::path& workspace, bool createIfMissing)
 }
 
 SubmitResult Work::submit(const std::string& prompt, JobType type) {
+    return submit(prompt, type, SubmitOptions{});
+}
+
+SubmitResult Work::submit(const std::string& prompt, JobType type, const SubmitOptions& opts) {
     if (!isValidPrompt(prompt)) {
         if (prompt.empty()) {
             LOG_DEBUG("Invalid prompt: empty");
@@ -129,6 +143,10 @@ SubmitResult Work::submit(const std::string& prompt, JobType type) {
         return {false, "", SubmissionError::IoError, "Failed to write type file"};
     }
 
+    if (!writeMetaFile(jobId, type, opts)) {
+        LOG_WARN("Failed to write meta.json for: " + jobId + " (non-fatal)");
+    }
+
     if (!atomicPublish(jobId)) {
         LOG_ERROR("Failed to publish job: " + jobId);
         cleanupFailedJob(jobId);
@@ -140,7 +158,17 @@ SubmitResult Work::submit(const std::string& prompt, JobType type) {
 }
 
 SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths) {
-    if (!isValidPrompt(prompt)) {
+    return submit(prompt, imagePaths, SubmitOptions{});
+}
+
+SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, const SubmitOptions& opts) {
+    JobType type = imagePaths.empty() ? JobType::Text : JobType::Vision;
+    return submit(prompt, imagePaths, type, opts);
+}
+
+SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, JobType type, const SubmitOptions& opts) {
+    const bool allowEmptyPrompt = type == JobType::Embed && !imagePaths.empty();
+    if ((!allowEmptyPrompt && !isValidPrompt(prompt)) || (allowEmptyPrompt && prompt.size() > maxBytes_)) {
         if (prompt.empty()) {
             LOG_DEBUG("Invalid prompt: empty");
             return {false, "", SubmissionError::InvalidContent, "Prompt is empty"};
@@ -181,12 +209,21 @@ SubmitResult Work::submit(const std::string& prompt, const std::vector<std::file
             cleanupFailedJob(jobId);
             return {false, "", SubmissionError::IoError, "Failed to write image files"};
         }
-        // Write vision type for jobs with images
-        if (!writeTypeFile(jobId, JobType::Vision)) {
+        if (!writeTypeFile(jobId, type)) {
             LOG_ERROR("Failed to write type file for: " + jobId);
             cleanupFailedJob(jobId);
             return {false, "", SubmissionError::IoError, "Failed to write type file"};
         }
+    } else if (type != JobType::Text) {
+        if (!writeTypeFile(jobId, type)) {
+            LOG_ERROR("Failed to write type file for: " + jobId);
+            cleanupFailedJob(jobId);
+            return {false, "", SubmissionError::IoError, "Failed to write type file"};
+        }
+    }
+
+    if (!writeMetaFile(jobId, type, opts)) {
+        LOG_WARN("Failed to write meta.json for: " + jobId + " (non-fatal)");
     }
 
     if (!atomicPublish(jobId)) {
@@ -325,6 +362,25 @@ bool Work::writeTypeFile(const JobId& jobId, JobType type) const noexcept {
         }
         file.flush();
         return file.good();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool Work::writeMetaFile(const JobId& jobId, JobType type, const SubmitOptions& opts) const noexcept {
+    try {
+        JobMeta meta;
+        meta.submitted_at = formatTimestamp();
+        meta.mode = jobTypeToString(type);
+        meta.parent = opts.parent;
+        for (const auto& tag : opts.tags) {
+            if (isValidTag(tag)) {
+                meta.tags.push_back(tag);
+            } else {
+                LOG_WARN("Ignoring invalid tag for job " + jobId + ": " + tag);
+            }
+        }
+        return writeMetaJson(workspace_ / "input" / "writing" / jobId, meta);
     } catch (...) {
         return false;
     }

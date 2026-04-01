@@ -12,6 +12,7 @@
 #include <chrono>
 
 #include "nrvna/types.hpp"
+#include "nrvna/meta.hpp"
 
 namespace nrvnaai {
 
@@ -40,6 +41,7 @@ public:
     [[nodiscard]] bool exists(const JobId& id) const noexcept;
     [[nodiscard]] std::optional<std::string> error(const JobId& id) const;
     [[nodiscard]] std::optional<std::string> prompt(const JobId& id) const;
+    [[nodiscard]] std::optional<JobMeta> meta(const JobId& id) const noexcept;
 
 private:
     std::filesystem::path workspace_;
@@ -48,7 +50,6 @@ private:
 };
 
 }
-
 
 
 

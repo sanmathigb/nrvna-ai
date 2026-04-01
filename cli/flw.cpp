@@ -6,7 +6,9 @@
 
 #include "nrvna/flow.hpp"
 #include "nrvna/logger.hpp"
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #include <chrono>
 #include <unistd.h>
@@ -24,6 +26,7 @@ void printUsage(const char* progName) {
     std::cout << "  job_id        Specific job ID to retrieve (optional)\n\n";
     std::cout << "Options:\n";
     std::cout << "  -w, --wait    Wait for job to complete before returning\n";
+    std::cout << "  --json        Output structured JSON\n";
     std::cout << "  -h, --help    Show this help message\n";
     std::cout << "  -v, --version Show version\n\n";
     std::cout << "Behavior:\n";
@@ -38,6 +41,28 @@ void printUsage(const char* progName) {
     std::cout << "  wrk ./workspace \"Hello\" | " << progName << " ./workspace -w\n";
 }
 
+std::string escapeJson(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+std::string readFileRaw(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+}
+
 const char* statusToString(Status status) {
     switch (status) {
         case Status::Queued: return "QUEUED";
@@ -46,6 +71,17 @@ const char* statusToString(Status status) {
         case Status::Failed: return "FAILED";
         case Status::Missing: return "MISSING";
         default: return "UNKNOWN";
+    }
+}
+
+const char* statusToJsonString(Status status) {
+    switch (status) {
+        case Status::Queued: return "queued";
+        case Status::Running: return "running";
+        case Status::Done: return "done";
+        case Status::Failed: return "failed";
+        case Status::Missing: return "missing";
+        default: return "unknown";
     }
 }
 
@@ -75,12 +111,15 @@ int main(int argc, char* argv[]) {
     std::string workspace = argv[1];
     std::string jobId = "";
     bool wait = false;
+    bool json = false;
     
     // Parse args
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-w" || arg == "--wait") {
             wait = true;
+        } else if (arg == "--json") {
+            json = true;
         } else {
             jobId = arg;
         }
@@ -126,6 +165,56 @@ int main(int argc, char* argv[]) {
             if (!job.has_value()) {
                 std::cerr << "Job not found: " << jobId << std::endl;
                 return 1;
+            }
+
+            if (json) {
+                auto meta = flow.meta(jobId);
+                auto outputDir = std::filesystem::path(workspace) / "output" / jobId;
+                std::ostringstream out;
+                out << "{";
+                out << "\"id\":\"" << escapeJson(jobId) << "\"";
+                out << ",\"status\":\"" << escapeJson(std::string(statusToJsonString(job->status))) << "\"";
+                if (meta) {
+                    if (!meta->mode.empty()) out << ",\"mode\":\"" << escapeJson(meta->mode) << "\"";
+                    if (!meta->submitted_at.empty()) out << ",\"submitted_at\":\"" << escapeJson(meta->submitted_at) << "\"";
+                    if (!meta->completed_at.empty()) out << ",\"completed_at\":\"" << escapeJson(meta->completed_at) << "\"";
+                    if (meta->duration_s >= 0.0) out << ",\"duration_s\":" << meta->duration_s;
+                    if (!meta->parent.empty()) out << ",\"parent\":\"" << escapeJson(meta->parent) << "\"";
+                    if (!meta->tags.empty()) {
+                        out << ",\"tags\":[";
+                        for (size_t i = 0; i < meta->tags.size(); ++i) {
+                            if (i > 0) out << ",";
+                            out << "\"" << escapeJson(meta->tags[i]) << "\"";
+                        }
+                        out << "]";
+                    }
+                    if (!meta->artifacts.empty()) {
+                        out << ",\"artifacts\":[";
+                        for (size_t i = 0; i < meta->artifacts.size(); ++i) {
+                            if (i > 0) out << ",";
+                            out << "\"" << escapeJson(meta->artifacts[i]) << "\"";
+                        }
+                        out << "]";
+                    }
+                }
+
+                if (job->status == Status::Done) {
+                    auto resultPath = outputDir / "result.txt";
+                    auto audioPath = outputDir / "audio.wav";
+                    auto embeddingPath = outputDir / "embedding.json";
+                    if (std::filesystem::exists(resultPath)) {
+                        out << ",\"result\":\"" << escapeJson(job->content) << "\"";
+                    } else if (std::filesystem::exists(audioPath)) {
+                        out << ",\"audio_path\":\"" << escapeJson(std::filesystem::absolute(audioPath).string()) << "\"";
+                    } else if (std::filesystem::exists(embeddingPath)) {
+                        out << ",\"embedding\":" << readFileRaw(embeddingPath);
+                    }
+                } else if (job->status == Status::Failed) {
+                    out << ",\"error\":\"" << escapeJson(job->content) << "\"";
+                }
+                out << "}\n";
+                std::cout << out.str();
+                return job->status == Status::Failed ? 1 : 0;
             }
 
             if (job->status == Status::Done) {
