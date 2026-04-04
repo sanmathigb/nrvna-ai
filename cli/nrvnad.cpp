@@ -4,98 +4,55 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "nrvna/server.hpp"
-#include "nrvna/runner.hpp"
 #include "nrvna/logger.hpp"
-#include <iostream>
-#include <iomanip>
-#include <fstream>
-#include <chrono>
-#include <thread>
-#include <csignal>
+#include "nrvna/runner.hpp"
+#include "nrvna/server.hpp"
 #include <algorithm>
-#include <cctype>
-#include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
-#include <optional>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
 #include <unistd.h>
+#include <optional>
 
 using namespace nrvnaai;
 
-constexpr const char* VERSION = "0.1.0";
+constexpr const char * VERSION = "0.1.0";
 
-// Async-signal-safe: only set flag, no complex operations
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static std::filesystem::path g_models_dir;
 
 void signalHandler(int signal) {
-    (void)signal;
+    (void) signal;
     g_shutdown_requested = 1;
 }
 
-struct WorkspaceInfo {
-    std::string path;
-    std::string model;
-    std::string mmproj;
-    std::string vocoder;
-    size_t queued = 0;
-    size_t processing = 0;
-    size_t done = 0;
-    size_t failed = 0;
-    bool daemonRunning = false;   // daemon currently active
-    bool daemonStopped = false;   // daemon was running but stopped (stale pid)
-};
-
-struct DashboardModelInfo {
-    std::string filename;
-    std::string shortName;
-    uintmax_t size;
-};
-
-// Forward declarations
-std::string trim(std::string value);
-std::string toLower(std::string value);
-bool isNumber(const std::string& value);
-bool containsToken(const std::string& haystack, const std::string& needle);
-std::optional<std::string> promptWorkspacePath();
-std::optional<std::filesystem::path> resolveModelPath(const std::string& modelArg);
-std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath);
-std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath);
-
-size_t countDirEntries(const std::filesystem::path& dir) {
-    size_t count = 0;
-    if (std::filesystem::exists(dir)) {
-        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            if (entry.is_directory()) ++count;
-        }
-    }
-    return count;
+std::string trim(std::string value) {
+    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
+    return value;
 }
 
-bool isWorkspace(const std::filesystem::path& dir) {
-    return std::filesystem::exists(dir / "input" / "ready") &&
-           std::filesystem::exists(dir / "input" / "writing");
+std::string toLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
 }
 
-std::optional<pid_t> readPidFile(const std::filesystem::path& path) {
-    std::ifstream file(path);
-    if (!file) {
-        return std::nullopt;
-    }
-    long pid = 0;
-    file >> pid;
-    if (pid <= 0) {
-        return std::nullopt;
-    }
-    return static_cast<pid_t>(pid);
+bool containsToken(const std::string & haystack, const std::string & needle) {
+    return haystack.find(needle) != std::string::npos;
 }
 
-std::filesystem::path resolveModelsDir(const char* argv0) {
-    if (const char* env = std::getenv("NRVNA_MODELS_DIR")) {
+std::filesystem::path resolveModelsDir(const char * argv0) {
+    if (const char * env = std::getenv("NRVNA_MODELS_DIR")) {
         return std::filesystem::path(env);
     }
 
@@ -117,560 +74,24 @@ std::filesystem::path resolveModelsDir(const char* argv0) {
     return std::filesystem::current_path() / "models";
 }
 
-std::string displayPath(const std::filesystem::path& path) {
-    std::error_code ec;
-    auto abs = std::filesystem::absolute(path, ec);
-    auto cwd = std::filesystem::current_path();
-    if (!ec) {
-        auto rel = abs.lexically_relative(cwd);
-        auto relStr = rel.string();
-        if (!rel.empty() && relStr.rfind("..", 0) != 0) {
-            if (relStr == ".") {
-                return "./";
-            }
-            if (relStr.rfind("./", 0) == 0) {
-                return relStr;
-            }
-            return std::string("./") + relStr;
-        }
-    }
-    return path.string();
-}
-
-bool isProcessAlive(pid_t pid) {
-    if (pid <= 0) {
-        return false;
-    }
-    if (::kill(pid, 0) == 0) {
-        return true;
-    }
-    return errno == EPERM;
-}
-
-std::filesystem::path workspaceHistoryFile() {
-    return std::filesystem::current_path() / ".nrvna-workspaces";
-}
-
-std::filesystem::path normalizePath(const std::filesystem::path& path) {
-    return std::filesystem::absolute(path).lexically_normal();
-}
-
-void recordWorkspacePath(const std::filesystem::path& workspace) {
-    auto cwd = std::filesystem::current_path();
-    auto normalized = normalizePath(workspace);
-
-    if (normalized.parent_path() == cwd) {
-        return;
-    }
-
-    std::unordered_set<std::string> seen;
-    auto historyPath = workspaceHistoryFile();
-    {
-        std::ifstream file(historyPath);
-        std::string line;
-        while (std::getline(file, line)) {
-            line = trim(line);
-            if (!line.empty()) {
-                seen.insert(line);
-            }
-        }
-    }
-
-    auto normalizedStr = normalized.string();
-    if (seen.count(normalizedStr) > 0) {
-        return;
-    }
-
-    std::ofstream file(historyPath, std::ios::app);
-    if (file) {
-        file << normalizedStr << "\n";
-    }
-}
-
-WorkspaceInfo readWorkspaceInfo(const std::filesystem::path& path, const std::string& displayPath) {
-    WorkspaceInfo ws;
-    ws.path = displayPath;
-    ws.queued = countDirEntries(path / "input" / "ready");
-    ws.processing = countDirEntries(path / "processing");
-    ws.done = countDirEntries(path / "output");
-    ws.failed = countDirEntries(path / "failed");
-
-    if (auto pid = readPidFile(path / ".nrvnad.pid")) {
-        ws.daemonRunning = isProcessAlive(*pid);
-        ws.daemonStopped = !ws.daemonRunning;
-    }
-
-    std::ifstream mf(path / ".model");
-    if (mf) std::getline(mf, ws.model);
-    std::ifstream mp(path / ".mmproj");
-    if (mp) std::getline(mp, ws.mmproj);
-    std::ifstream vf(path / ".vocoder");
-    if (vf) std::getline(vf, ws.vocoder);
-
-    return ws;
-}
-
-std::vector<WorkspaceInfo> scanWorkspaces() {
-    std::vector<WorkspaceInfo> workspaces;
-    auto cwd = std::filesystem::current_path();
-    std::unordered_set<std::string> seen;
-
-    for (const auto& entry : std::filesystem::directory_iterator(cwd)) {
-        if (!entry.is_directory()) continue;
-        if (entry.path().filename().string()[0] == '.') continue;
-        if (!isWorkspace(entry.path())) continue;
-
-        workspaces.push_back(readWorkspaceInfo(entry.path(), "./" + entry.path().filename().string()));
-        seen.insert(normalizePath(entry.path()).string());
-    }
-
-    std::ifstream history(workspaceHistoryFile());
-    if (history) {
-        std::string line;
-        while (std::getline(history, line)) {
-            line = trim(line);
-            if (line.empty()) continue;
-            auto path = normalizePath(std::filesystem::path(line));
-            if (seen.count(path.string()) > 0) continue;
-            if (!std::filesystem::exists(path) || !isWorkspace(path)) continue;
-
-            workspaces.push_back(readWorkspaceInfo(path, path.string()));
-            seen.insert(path.string());
-        }
-    }
-    std::sort(workspaces.begin(), workspaces.end(),
-              [](const auto& a, const auto& b) { return a.path < b.path; });
-    return workspaces;
-}
-
-std::string extractShortName(const std::string& filename) {
-    size_t pos = filename.find_first_of("-_.");
-    std::string name = (pos != std::string::npos && pos > 0)
-        ? filename.substr(0, pos)
-        : filename.substr(0, 8);
-    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-    return name;
-}
-
-std::vector<DashboardModelInfo> scanModels() {
-    std::vector<DashboardModelInfo> models;
-    std::filesystem::path modelsDir = g_models_dir;
-
-    if (!std::filesystem::exists(modelsDir)) return models;
-
-    for (const auto& entry : std::filesystem::directory_iterator(modelsDir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".gguf") continue;
-        std::string filename = entry.path().filename().string();
-        if (filename.find("mmproj") != std::string::npos) continue;
-        std::string lower = toLower(filename);
-        if (lower.find("vocoder") != std::string::npos || lower.find("wavtokenizer") != std::string::npos) continue;
-
-        DashboardModelInfo m;
-        m.filename = filename;
-        m.shortName = extractShortName(filename);
-        m.size = entry.file_size();
-        models.push_back(m);
-    }
-    std::sort(models.begin(), models.end(),
-              [](const auto& a, const auto& b) { return a.shortName < b.shortName; });
-    return models;
-}
-
-std::optional<std::string> latestJobId(const std::filesystem::path& workspace) {
-    std::optional<std::string> latest;
-    std::optional<std::filesystem::file_time_type> latestTime;
-
-    auto scanDir = [&](const std::filesystem::path& dir) {
-        if (!std::filesystem::exists(dir)) {
-            return;
-        }
-        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            if (!entry.is_directory()) {
-                continue;
-            }
-            auto ts = std::filesystem::last_write_time(entry);
-            if (!latestTime || ts > *latestTime) {
-                latestTime = ts;
-                latest = entry.path().filename().string();
-            }
-        }
-    };
-
-    scanDir(workspace / "output");
-    scanDir(workspace / "failed");
-    return latest;
-}
-
-struct DashboardResult {
-    std::vector<WorkspaceInfo> workspaces;  // All non-running workspaces (for interactive start)
-    std::vector<DashboardModelInfo> models;
-};
-
-struct DaemonSelection {
-    std::string modelPath;
-    std::string workspace;
-    std::string mmprojPath;
-    std::string vocoderPath;
-};
-
-DashboardResult printDashboard() {
-    auto models = scanModels();
-    auto allWorkspaces = scanWorkspaces();
-
-    // Only show workspaces where daemon is not currently running
-    std::vector<WorkspaceInfo> selectable;
-    for (const auto& ws : allWorkspaces) {
-        if (!ws.daemonRunning) selectable.push_back(ws);
-    }
-    // Sort: queued jobs first, then stopped daemons, then idle
-    std::sort(selectable.begin(), selectable.end(), [](const auto& a, const auto& b) {
-        auto priority = [](const WorkspaceInfo& ws) {
-            if (ws.queued > 0) return 0;
-            if (ws.daemonStopped) return 1;
-            return 2;
-        };
-        int pa = priority(a), pb = priority(b);
-        if (pa != pb) return pa < pb;
-        return a.path < b.path;
-    });
-
-    // Header
-    std::cout << "\n";
-    std::cout << "  \033[1mnrvna\033[0m " << VERSION << "                        \033[90masync · inference · primitive\033[0m\n";
-    std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-    std::cout << "\n";
-
-    // Show active (running) workspaces as non-selectable status
-    {
-        std::vector<const WorkspaceInfo*> active;
-        for (const auto& ws : allWorkspaces) {
-            if (ws.daemonRunning) active.push_back(&ws);
-        }
-        if (!active.empty()) {
-            std::cout << "  \033[1mACTIVE\033[0m\n\n";
-            for (const auto* ws : active) {
-                std::string dp = ws->path;
-                if (dp.size() > 16) dp = dp.substr(0, 13) + "...";
-                std::string modelDisplay = ws->model.empty() ? "(no model)" : extractShortName(ws->model);
-                std::cout << "    \033[32m●\033[0m   ";
-                std::cout << "\033[36m" << std::left << std::setw(16) << dp << "\033[0m  ";
-                std::cout << "\033[90m" << std::left << std::setw(10) << modelDisplay << "\033[0m  ";
-                if (ws->queued > 0) std::cout << "\033[33;1m" << ws->queued << " queued\033[0m  ";
-                if (ws->processing > 0) std::cout << "\033[36m" << ws->processing << " running\033[0m  ";
-                if (ws->done > 0) std::cout << "\033[32m" << ws->done << " done\033[0m  ";
-                if (ws->failed > 0) std::cout << "\033[31m" << ws->failed << " failed\033[0m";
-                std::cout << "\n";
-            }
-            std::cout << "\n";
-        }
-    }
-
-    // Selectable workspaces with inline status tags
-    if (!selectable.empty()) {
-        std::cout << "  \033[1mWORKSPACES\033[0m\n\n";
-        constexpr size_t maxDisplay = 8;
-        int idx = 1;
-        size_t displayed = 0;
-        for (const auto& ws : selectable) {
-            if (displayed >= maxDisplay) {
-                std::cout << "    \033[90m+" << (selectable.size() - maxDisplay) << " more\033[0m\n";
-                break;
-            }
-            std::string dp = ws.path;
-            if (dp.size() > 16) dp = dp.substr(0, 13) + "...";
-            std::string modelDisplay = ws.model.empty() ? "(no model)" : extractShortName(ws.model);
-            std::cout << "    \033[33m[" << idx << "]\033[0m  ";
-            std::cout << "\033[36m" << std::left << std::setw(16) << dp << "\033[0m  ";
-            std::cout << "\033[90m" << std::left << std::setw(10) << modelDisplay << "\033[0m  ";
-            if (ws.queued > 0) std::cout << "\033[33;1m" << ws.queued << " queued\033[0m  ";
-            if (ws.done > 0) std::cout << "\033[32m" << ws.done << " done\033[0m  ";
-            if (ws.failed > 0) std::cout << "\033[31m" << ws.failed << " failed\033[0m";
-            std::cout << "\n";
-            ++idx;
-            ++displayed;
-        }
-        std::cout << "\n";
-    }
-
-    // Models - numbers continue from workspace count
-    bool isDefaultModelsDir = (std::getenv("NRVNA_MODELS_DIR") == nullptr);
-    if (!models.empty()) {
-        std::cout << "  \033[1mMODELS\033[0m  \033[90m" << displayPath(g_models_dir) << "/";
-        if (models.size() > 6) {
-            std::cout << "  (" << models.size() << " available)";
-        }
-        std::cout << "\033[0m\n\n";
-        constexpr size_t maxDisplay = 6;
-        size_t modelOffset = selectable.size();
-        size_t displayed = 0;
-        for (size_t i = 0; i < models.size(); ++i) {
-            if (displayed >= maxDisplay) {
-                size_t remaining = models.size() - maxDisplay;
-                if (remaining <= 3) {
-                    const auto& m = models[i];
-                    double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
-                    std::cout << "    \033[33m[" << (modelOffset + i + 1) << "]\033[0m  ";
-                    std::cout << "\033[36m" << std::left << std::setw(12) << m.shortName << "\033[0m"
-                              << std::setw(40) << m.filename
-                              << "\033[90m" << std::fixed << std::setprecision(1) << gb << " GB\033[0m\n";
-                    ++displayed;
-                    continue;
-                }
-                std::cout << "    \033[90m+" << remaining << " more (type name to search)\033[0m\n";
-                break;
-            }
-            const auto& m = models[i];
-            double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
-            std::cout << "    \033[33m[" << (modelOffset + i + 1) << "]\033[0m  ";
-            std::cout << "\033[36m" << std::left << std::setw(12) << m.shortName << "\033[0m"
-                      << std::setw(40) << m.filename
-                      << "\033[90m" << std::fixed << std::setprecision(1) << gb << " GB\033[0m\n";
-            ++displayed;
-        }
-        std::cout << "\n";
-    } else {
-        std::cout << "  \033[1mMODELS\033[0m  \033[90m" << displayPath(g_models_dir) << "/\033[0m\n\n";
-        std::cout << "    \033[33mNo .gguf models found\033[0m\n\n";
-        std::cout << "    \033[90mDownload GGUF models from huggingface.co\033[0m\n";
-        if (isDefaultModelsDir) {
-            std::cout << "    \033[90mPlace in ./models/ or set NRVNA_MODELS_DIR\033[0m\n";
-        }
-        std::cout << "\n";
-    }
-
-    // Footer legend
-    std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-    std::cout << "  \033[90m";
-    if (!selectable.empty()) {
-        std::cout << "[1";
-        if (selectable.size() > 1) std::cout << "-" << selectable.size();
-        std::cout << "] workspace";
-        if (selectable.size() > 1) std::cout << "s";
-    }
-    if (!models.empty()) {
-        if (!selectable.empty()) std::cout << "    ";
-        std::cout << "[" << (selectable.size() + 1);
-        if (models.size() > 1) std::cout << "-" << (selectable.size() + models.size());
-        std::cout << "] model";
-        if (models.size() > 1) std::cout << "s";
-    }
-    if (!selectable.empty() || !models.empty()) std::cout << "    ";
-    std::cout << "m = all models    q = quit\033[0m\n";
-
-    return {selectable, models};
-}
-
-int promptWorkers(int defaultVal = 4) {
-    std::cout << "  \033[90mWorkers [" << defaultVal << "]:\033[0m ";
-    std::cout.flush();
-    std::string input;
-    if (std::getline(std::cin, input) && !input.empty()) {
-        try {
-            int w = std::stoi(input);
-            if (w >= 1 && w <= 64) return w;
-        } catch (...) {}
-    }
-    return defaultVal;
-}
-// Helper: select a model, ask workspace + workers, auto-detect mmproj
-std::optional<DaemonSelection> selectModel(const DashboardModelInfo& model, int& workers) {
-    std::cout << "\n  Selected \033[36m" << model.filename << "\033[0m\n";
-
-    auto workspace = promptWorkspacePath();
-    if (!workspace) return std::nullopt;
-
-    workers = promptWorkers();
-    auto modelPath = (g_models_dir / model.filename).string();
-
-    // Auto-detect mmproj
-    std::string mmprojPath;
-    if (auto resolved = resolveMmprojPath(std::filesystem::path(modelPath))) {
-        mmprojPath = resolved->string();
-        std::cout << "  \033[90mMMProj: " << resolved->filename().string() << "\033[0m\n";
-    }
-
-    // Auto-detect vocoder for TTS models
-    std::string vocoderPathStr;
-    if (auto resolved = resolveVocoderPath(std::filesystem::path(modelPath))) {
-        vocoderPathStr = resolved->string();
-        std::cout << "  \033[90mVocoder: " << resolved->filename().string() << "\033[0m\n";
-    }
-
-    return DaemonSelection{modelPath, *workspace, mmprojPath, vocoderPathStr};
-}
-
-std::optional<DaemonSelection> promptUnifiedSelection(
-    const std::vector<WorkspaceInfo>& workspaces,
-    const std::vector<DashboardModelInfo>& models,
-    int& workers
-) {
-    size_t wsCount = workspaces.size();
-    size_t modelCount = models.size();
-
-    while (true) {
-        std::cout << "\n  \033[90m>\033[0m ";
-        std::cout.flush();
-
-        std::string input;
-        if (!std::getline(std::cin, input)) {
-            return std::nullopt;
-        }
-        input = trim(input);
-        if (input.empty()) continue;
-
-        if (input == "q" || input == "Q" || input == "quit") {
-            return std::nullopt;
-        }
-
-        if (input == "m" || input == "M" || input == "more") {
-            std::cout << "\n  \033[1mALL MODELS\033[0m\n\n";
-            for (size_t i = 0; i < models.size(); ++i) {
-                const auto& m = models[i];
-                double gb = static_cast<double>(m.size) / (1024.0 * 1024.0 * 1024.0);
-                std::cout << "    \033[33m[" << (wsCount + i + 1) << "]\033[0m  ";
-                std::cout << "\033[36m" << std::left << std::setw(12) << m.shortName << "\033[0m"
-                          << std::setw(40) << m.filename
-                          << "\033[90m" << std::fixed << std::setprecision(1) << gb << " GB\033[0m\n";
-            }
-            std::cout << "\n";
-            continue;
-        }
-
-        // Try as number
-        if (isNumber(input)) {
-            int choice = std::stoi(input);
-
-            // Workspace selection
-            if (choice >= 1 && choice <= static_cast<int>(wsCount)) {
-                const auto& ws = workspaces[choice - 1];
-                if (ws.model.empty()) {
-                    std::cout << "  \033[33mNo model set. Use: nrvnad <model> " << ws.path << "\033[0m\n";
-                    continue;
-                }
-                std::string modelDisplay = extractShortName(ws.model);
-                std::cout << "\n  Starting \033[36m" << ws.path << "\033[0m with \033[36m" << modelDisplay << "\033[0m\n";
-                workers = promptWorkers();
-
-                // Auto-detect mmproj if stored one is empty or stale
-                std::string mmprojPath = ws.mmproj;
-                if (mmprojPath.empty() || !std::filesystem::exists(mmprojPath)) {
-                    if (auto resolved = resolveModelPath(ws.model)) {
-                        if (auto mmResolved = resolveMmprojPath(*resolved)) {
-                            mmprojPath = mmResolved->string();
-                            std::cout << "  \033[90mMMProj: " << mmResolved->filename().string() << "\033[0m\n";
-                        }
-                    }
-                }
-
-                // Auto-detect vocoder if not stored
-                std::string vocoderPathWs = ws.vocoder;
-                if (vocoderPathWs.empty() || !std::filesystem::exists(vocoderPathWs)) {
-                    if (auto resolved = resolveModelPath(ws.model)) {
-                        if (auto vocResolved = resolveVocoderPath(*resolved)) {
-                            vocoderPathWs = vocResolved->string();
-                            std::cout << "  \033[90mVocoder: " << vocResolved->filename().string() << "\033[0m\n";
-                        }
-                    }
-                }
-
-                return DaemonSelection{ws.model, ws.path, mmprojPath, vocoderPathWs};
-            }
-
-            // Model selection
-            int modelIdx = choice - static_cast<int>(wsCount) - 1;
-            if (modelIdx >= 0 && modelIdx < static_cast<int>(modelCount)) {
-                auto result = selectModel(models[modelIdx], workers);
-                if (result) return result;
-                continue;
-            }
-
-            std::cout << "  \033[31mInvalid number\033[0m\n";
-            continue;
-        }
-
-        // Try as model name search
-        std::string needle = toLower(input);
-        std::vector<size_t> matches;
-        for (size_t i = 0; i < models.size(); ++i) {
-            std::string fileLower = toLower(models[i].filename);
-            if (fileLower.find(needle) != std::string::npos) {
-                matches.push_back(i);
-            }
-        }
-
-        if (matches.empty()) {
-            std::cout << "  \033[31mNo matching model found\033[0m\n";
-            continue;
-        }
-
-        if (matches.size() > 1) {
-            std::cout << "\n  \033[33mMultiple matches:\033[0m\n";
-            for (size_t idx : matches) {
-                const auto& m = models[idx];
-                std::cout << "    \033[33m[" << (wsCount + idx + 1) << "]\033[0m  "
-                          << "\033[36m" << m.shortName << "\033[0m  " << m.filename << "\n";
-            }
-            std::cout << "  \033[90mPick a number to select\033[0m\n";
-            continue;
-        }
-
-        // Single match
-        auto result = selectModel(models[matches[0]], workers);
-        if (result) return result;
-    }
-}
-
-std::string toLower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
-std::string trim(std::string value) {
-    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
-    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
-    return value;
-}
-
-std::optional<std::string> promptWorkspacePath() {
-    std::cout << "  Workspace path [workspace]: ";
-    std::cout.flush();
-    std::string input;
-    if (!std::getline(std::cin, input)) return std::nullopt;
-    input = trim(input);
-    return input.empty() ? "workspace" : input;
-}
-
-bool isNumber(const std::string& value) {
-    return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c); });
-}
-
-bool containsToken(const std::string& haystack, const std::string& needle) {
-    return haystack.find(needle) != std::string::npos;
-}
-
-std::optional<std::filesystem::path> resolveModelPath(const std::string& modelArg) {
+std::optional<std::filesystem::path> resolveModelPath(const std::string & modelArg) {
     std::filesystem::path candidate(modelArg);
     if (std::filesystem::exists(candidate)) {
         return candidate;
     }
 
-    std::filesystem::path modelsDir = g_models_dir;
-    if (!std::filesystem::exists(modelsDir)) {
+    if (!std::filesystem::exists(g_models_dir)) {
         return std::nullopt;
     }
 
     std::string needle = toLower(modelArg);
     std::vector<std::filesystem::path> matches;
 
-    for (const auto& entry : std::filesystem::directory_iterator(modelsDir)) {
+    for (const auto & entry : std::filesystem::directory_iterator(g_models_dir)) {
         if (!entry.is_regular_file()) {
             continue;
         }
-        const auto& path = entry.path();
+        const auto & path = entry.path();
         if (path.extension() != ".gguf") {
             continue;
         }
@@ -691,11 +112,67 @@ std::optional<std::filesystem::path> resolveModelPath(const std::string& modelAr
     return matches.front();
 }
 
+std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path & modelPath) {
+    std::filesystem::path dir = modelPath.parent_path();
+    if (dir.empty() || !std::filesystem::exists(dir)) {
+        return std::nullopt;
+    }
 
-void applyDefaultEnv(const char* key,
-                     const std::string& value,
-                     const std::unordered_set<std::string>& lockedKeys,
-                     std::unordered_map<std::string, std::string>& applied) {
+    std::string stem = toLower(modelPath.stem().string());
+    std::vector<std::filesystem::path> matches;
+
+    for (const auto & entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto & path = entry.path();
+        if (path.extension() != ".gguf") {
+            continue;
+        }
+        std::string filename = toLower(path.filename().string());
+        if (containsToken(filename, "mmproj") && (stem.empty() || containsToken(filename, stem))) {
+            matches.push_back(path);
+        }
+    }
+
+    if (matches.empty()) {
+        return std::nullopt;
+    }
+
+    std::sort(matches.begin(), matches.end());
+    return matches.front();
+}
+
+std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path & modelPath) {
+    std::filesystem::path dir = modelPath.parent_path();
+    if (dir.empty() || !std::filesystem::exists(dir)) {
+        return std::nullopt;
+    }
+
+    std::string modelName = toLower(modelPath.stem().string());
+    if (!containsToken(modelName, "outetts") && !containsToken(modelName, "oute")) {
+        return std::nullopt;
+    }
+
+    std::vector<std::filesystem::path> matches;
+    for (const auto & entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".gguf") continue;
+        std::string filename = toLower(entry.path().filename().string());
+        if (containsToken(filename, "vocoder") || containsToken(filename, "wavtokenizer")) {
+            matches.push_back(entry.path());
+        }
+    }
+
+    if (matches.empty()) return std::nullopt;
+    std::sort(matches.begin(), matches.end());
+    return matches.front();
+}
+
+void applyDefaultEnv(const char * key,
+                     const std::string & value,
+                     const std::unordered_set<std::string> & lockedKeys,
+                     std::unordered_map<std::string, std::string> & applied) {
     if (lockedKeys.count(key) > 0) {
         return;
     }
@@ -703,16 +180,13 @@ void applyDefaultEnv(const char* key,
     applied[key] = value;
 }
 
-void applyModelDefaults(const std::filesystem::path& modelPath, const ModelInfo& info) {
+void applyModelDefaults(const std::filesystem::path & modelPath, const ModelInfo & info) {
     std::string filename = toLower(modelPath.filename().string());
     std::unordered_set<std::string> lockedKeys;
 
-    // Check which keys user has already set
     if (std::getenv("NRVNA_TEMP")) lockedKeys.insert("NRVNA_TEMP");
 
     std::unordered_map<std::string, std::string> applied;
-
-    // Temperature policy: metadata-first, filename as fallback
     std::string archLower = toLower(info.arch);
     std::string descLower = toLower(info.desc);
     if (containsToken(archLower, "code") || containsToken(descLower, "coder") ||
@@ -723,16 +197,12 @@ void applyModelDefaults(const std::filesystem::path& modelPath, const ModelInfo&
         applyDefaultEnv("NRVNA_TEMP", "0.6", lockedKeys, applied);
     }
 
-    // Context size: buildSamplingConfig() handles min(n_ctx_train, NRVNA_MAX_CTX default 8192).
-    // Don't set NRVNA_MAX_CTX here — that would impose a policy cap on long-context models.
-
-    // VRAM warning: model > 4GB with GPU layers enabled
     constexpr uint64_t VRAM_4GB = 4ULL * 1024 * 1024 * 1024;
     if (info.model_size_bytes > VRAM_4GB) {
         int gpuLayers = 99;
-        #if !defined(__APPLE__)
-            gpuLayers = 0;
-        #endif
+#if !defined(__APPLE__)
+        gpuLayers = 0;
+#endif
         if (std::getenv("NRVNA_GPU_LAYERS")) {
             gpuLayers = std::atoi(std::getenv("NRVNA_GPU_LAYERS"));
         }
@@ -743,35 +213,43 @@ void applyModelDefaults(const std::filesystem::path& modelPath, const ModelInfo&
         }
     }
 
-    // Embed model info
     if (info.n_embd_out > 0 && info.has_encoder && !info.has_decoder) {
         LOG_INFO("Embedding model detected: output dim=" + std::to_string(info.n_embd_out));
     }
 
     if (!applied.empty()) {
         std::string summary = "Applied defaults:";
-        for (const auto& entry : applied) {
+        for (const auto & entry : applied) {
             summary += " " + entry.first + "=" + entry.second;
         }
         LOG_INFO(summary);
     }
 }
 
-int main(int argc, char* argv[]) {
+void printHelp() {
+    std::cout << "nrvna " << VERSION << "                        async · inference · primitive\n\n";
+    std::cout << "USAGE\n\n";
+    std::cout << "  nrvnad <model.gguf> <workspace> [options]    start daemon\n";
+    std::cout << "  wrk <workspace> \"prompt\"                     submit work\n";
+    std::cout << "  flw <workspace> [job-id]                     collect results\n\n";
+    std::cout << "OPTIONS\n\n";
+    std::cout << "  --mmproj <path>     Vision projection model\n";
+    std::cout << "  --vocoder <path>    TTS vocoder model\n";
+    std::cout << "  -w, --workers <n>   Worker threads (default: 4)\n";
+    std::cout << "  -v, --version       Show version\n";
+    std::cout << "  -h, --help          Show this help\n\n";
+    std::cout << "NOTES\n\n";
+    std::cout << "  Models are .gguf files. Set NRVNA_MODELS_DIR or pass a full path.\n";
+    std::cout << "  MMProj and vocoder are auto-detected from the model directory.\n";
+}
+
+int main(int argc, char * argv[]) {
     g_models_dir = resolveModelsDir(argv[0]);
 
-    // Handle --help and --version before anything else
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "\033[2J\033[1;1H";
-            printDashboard();
-            std::cout << "\n";
-            std::cout << "  \033[1mUSAGE\033[0m\n\n";
-            std::cout << "    nrvnad <model.gguf> <workspace>  select model · assign workspace · start\n";
-            std::cout << "    wrk <workspace> \"prompt\"         submit work\n";
-            std::cout << "    flw <workspace> [job-id]         collect results\n";
-            std::cout << "\n";
+            printHelp();
             return 0;
         }
         if (arg == "-v" || arg == "--version") {
@@ -786,7 +264,6 @@ int main(int argc, char* argv[]) {
     std::string vocoderPath;
     int workers = 4;
 
-    // Parse all flags first, collect positional args
     std::vector<std::string> positionalArgs;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -801,18 +278,15 @@ int main(int argc, char* argv[]) {
             mmprojPath = argv[++i];
         } else if (arg == "--vocoder" && i + 1 < argc) {
             vocoderPath = argv[++i];
-        } else if (arg == "--workspace" && i + 1 < argc) {
-            workspace = argv[++i];
-        } else if (arg[0] != '-') {
+        } else if (!arg.empty() && arg[0] != '-') {
             positionalArgs.push_back(arg);
         }
     }
 
-    // Extract model and workspace from positional args if not set via flags
-    if (!positionalArgs.empty() && modelPath.empty()) {
+    if (!positionalArgs.empty()) {
         modelPath = positionalArgs[0];
     }
-    if (positionalArgs.size() > 1 && workspace.empty()) {
+    if (positionalArgs.size() > 1) {
         workspace = positionalArgs[1];
     }
     if (positionalArgs.size() > 2) {
@@ -824,28 +298,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    bool cliMode = !modelPath.empty();
+    if (modelPath.empty()) {
+        printHelp();
+        return 0;
+    }
 
-    if (!cliMode) {
-        // Interactive mode: suppress logs during dashboard for clean UI
-        Logger::setLevel(LogLevel::ERROR);
-        setenv("NRVNA_QUIET", "1", 1);
-
-        std::cout << "\033[2J\033[1;1H";
-        auto result = printDashboard();
-
-        auto selection = promptUnifiedSelection(result.workspaces, result.models, workers);
-        if (!selection) {
-            return 0;
-        }
-        modelPath = selection->modelPath;
-        workspace = selection->workspace;
-        mmprojPath = selection->mmprojPath;
-        vocoderPath = selection->vocoderPath;
-
-        // Transition to server mode: respect NRVNA_LOG_LEVEL (defaults to INFO)
-        Logger::initFromEnv();
-    } else if (workspace.empty()) {
+    if (workspace.empty()) {
         std::cerr << "Error: workspace required\n";
         std::cerr << "Usage: nrvnad <model> <workspace> [--mmproj <path>] [--vocoder <path>] [-w <n>]\n";
         return 1;
@@ -869,20 +327,17 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Auto-detect vocoder for TTS models in CLI mode
     if (vocoderPath.empty()) {
         if (auto resolved = resolveVocoderPath(std::filesystem::path(modelPath))) {
             vocoderPath = resolved->string();
         }
     }
 
-    // Validate vocoder path if specified
     if (!vocoderPath.empty() && !std::filesystem::exists(std::filesystem::path(vocoderPath))) {
         std::cerr << "Error: Vocoder not found: " << vocoderPath << "\n";
         return 1;
     }
 
-    // Probe GGUF metadata before server start
     ModelInfo probeInfo = Runner::probeModelInfo(modelPath);
     if (!probeInfo.valid) {
         std::cerr << "Error: Failed to probe model metadata: " << modelPath << "\n";
@@ -890,15 +345,11 @@ int main(int argc, char* argv[]) {
     }
 
     applyModelDefaults(std::filesystem::path(modelPath), probeInfo);
-    recordWorkspacePath(std::filesystem::path(workspace));
 
-    std::cout << "\033[2J\033[1;1H";
     std::cout << "\n";
     std::cout << "  \033[1mnrvna\033[0m " << VERSION << "                        \033[90masync · inference · primitive\033[0m\n";
-    std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-    std::cout << "\n";
+    std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n\n";
 
-    // Model info line
     {
         double gb = static_cast<double>(probeInfo.model_size_bytes) / (1024.0 * 1024.0 * 1024.0);
         std::string sizeStr = std::to_string(gb).substr(0, 3) + " GB";
@@ -936,20 +387,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Write model info to workspace for dashboard
-        {
-            std::ofstream mf(workspace + "/.model");
-            if (mf) mf << modelName;
-        }
-        if (!mmprojPath.empty()) {
-            std::ofstream mp(workspace + "/.mmproj");
-            if (mp) mp << mmprojPath;
-        }
-        if (!vocoderPath.empty()) {
-            std::ofstream vf(workspace + "/.vocoder");
-            if (vf) vf << vocoderPath;
-        }
-
         std::cout << "\n";
         std::cout << "  \033[1mRUNNING\033[0m\n\n";
         std::cout << "    Model      " << modelName << "\n";
@@ -962,23 +399,10 @@ int main(int argc, char* argv[]) {
             std::cout << "    Vocoder    " << vocoderPath << "\n";
         }
         std::cout << "\n";
-        std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-        std::cout << "\n";
-        auto latest = latestJobId(std::filesystem::path(workspace));
+        std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n\n";
         std::cout << "  Submit:  ./wrk " << workspace << " \"prompt\"\n";
-        std::cout << "  Results: ./flw " << workspace;
-        if (latest) {
-            std::cout << " " << *latest;
-        } else {
-            std::cout << " <job-id>";
-        }
-        std::cout << "\n";
-        if (latest) {
-            std::cout << "  \033[90mLatest job:\033[0m " << *latest << "\n";
-        }
-        std::cout << "\n";
-        std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n";
-        std::cout << "\n";
+        std::cout << "  Results: ./flw " << workspace << " <job-id>\n\n";
+        std::cout << "  \033[90m─────────────────────────────────────────────────────────────────\033[0m\n\n";
 
         while (!g_shutdown_requested && server->isRunning()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -994,7 +418,7 @@ int main(int argc, char* argv[]) {
         }
         server->shutdown();
 
-    } catch (const std::exception& e) {
+    } catch (const std::exception & e) {
         LOG_ERROR("Server error: " + std::string(e.what()));
         return 1;
     } catch (...) {
@@ -1004,62 +428,4 @@ int main(int argc, char* argv[]) {
 
     LOG_DEBUG("nrvna-ai daemon stopped");
     return 0;
-}
-
-std::optional<std::filesystem::path> resolveMmprojPath(const std::filesystem::path& modelPath) {
-    std::filesystem::path dir = modelPath.parent_path();
-    if (dir.empty() || !std::filesystem::exists(dir)) {
-        return std::nullopt;
-    }
-
-    std::string stem = toLower(modelPath.stem().string());
-    std::vector<std::filesystem::path> matches;
-
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        const auto& path = entry.path();
-        if (path.extension() != ".gguf") {
-            continue;
-        }
-        std::string filename = toLower(path.filename().string());
-        if (containsToken(filename, "mmproj") && (stem.empty() || containsToken(filename, stem))) {
-            matches.push_back(path);
-        }
-    }
-
-    if (matches.empty()) {
-        return std::nullopt;
-    }
-
-    std::sort(matches.begin(), matches.end());
-    return matches.front();
-}
-
-std::optional<std::filesystem::path> resolveVocoderPath(const std::filesystem::path& modelPath) {
-    std::filesystem::path dir = modelPath.parent_path();
-    if (dir.empty() || !std::filesystem::exists(dir)) {
-        return std::nullopt;
-    }
-
-    // Only auto-detect vocoder for TTS models (outetts, oute)
-    std::string modelName = toLower(modelPath.stem().string());
-    if (!containsToken(modelName, "outetts") && !containsToken(modelName, "oute")) {
-        return std::nullopt;
-    }
-
-    std::vector<std::filesystem::path> matches;
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".gguf") continue;
-        std::string filename = toLower(entry.path().filename().string());
-        if (containsToken(filename, "vocoder") || containsToken(filename, "wavtokenizer")) {
-            matches.push_back(entry.path());
-        }
-    }
-
-    if (matches.empty()) return std::nullopt;
-    std::sort(matches.begin(), matches.end());
-    return matches.front();
 }

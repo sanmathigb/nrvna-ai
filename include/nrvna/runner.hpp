@@ -18,6 +18,7 @@ struct llama_context_params;
 struct llama_sampler;
 struct mtmd_context;
 struct mtmd_bitmap;
+struct common_chat_templates;
 
 namespace nrvnaai {
 
@@ -110,6 +111,9 @@ private:
 
     llama_context* context_ = nullptr;
     mtmd_context* mtmd_ctx_ = nullptr;
+
+    // Per-instance chat templates (initialized at model load, destroyed with model)
+    common_chat_templates* chat_templates_ = nullptr;
 };
 
 }

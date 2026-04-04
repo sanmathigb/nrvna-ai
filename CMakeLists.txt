@@ -13,6 +13,7 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_NUMBER 0 CACHE STRING "" FORCE)
 set(LLAMA_INSTALL_VERSION "0.0.0")
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/llama.cpp)
 
 # Add mtmd library for multimodal support
@@ -43,10 +44,12 @@ target_include_directories(nrvna_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common
 )
 target_link_libraries(nrvna_core PUBLIC
     llama
     mtmd
+    common
     Threads::Threads
 )
 target_compile_options(nrvna_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -60,14 +63,6 @@ target_link_libraries(wrk nrvna_core)
 
 add_executable(flw cli/flw.cpp)
 target_link_libraries(flw nrvna_core)
-
-# nrvna-web disabled until httplib.h location resolved after llama.cpp update
-# add_executable(nrvna-web cli/nrvna-web.cpp)
-# target_include_directories(nrvna-web PRIVATE
-#     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/server
-#     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common
-# )
-# target_link_libraries(nrvna-web nrvna_core)
 
 # Install targets
 install(TARGETS nrvnad wrk flw

@@ -7,6 +7,7 @@
 #include "nrvna/runner.hpp"
 #include "nrvna/logger.hpp"
 #include "llama_util.hpp"
+#include "chat.h"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -41,20 +42,57 @@ static std::mutex vision_encoding_mutex_;
 static std::string stripThinkBlocks(const std::string& text) {
     std::string result = text;
     size_t pos = 0;
+
+    // Strip <think>...</think> blocks (Qwen/DeepSeek style)
     while ((pos = result.find("<think>", pos)) != std::string::npos) {
         size_t end = result.find("</think>", pos);
         if (end != std::string::npos) {
-            // Closed block: remove <think>...</think> and trailing whitespace
-            end += 8; // length of "</think>"
+            end += 8;
             while (end < result.size() && (result[end] == ' ' || result[end] == '\t' || result[end] == '\n' || result[end] == '\r'))
                 ++end;
             result.erase(pos, end - pos);
         } else {
-            // Unclosed block: model ran out of tokens mid-think, strip to end
             result.erase(pos);
         }
     }
-    // Trim leading whitespace left behind
+
+    // Strip <|channel>thought...<channel|> blocks (Gemma 4 style)
+    pos = 0;
+    while ((pos = result.find("<|channel>thought", pos)) != std::string::npos) {
+        size_t end = result.find("<channel|>", pos);
+        if (end != std::string::npos) {
+            end += 10;
+            while (end < result.size() && (result[end] == ' ' || result[end] == '\t' || result[end] == '\n' || result[end] == '\r'))
+                ++end;
+            result.erase(pos, end - pos);
+        } else {
+            result.erase(pos);
+        }
+    }
+
+    // Strip [Start thinking]...[/End thinking] or similar (Gemma 4 alternate)
+    pos = 0;
+    while ((pos = result.find("[Start thinking]", pos)) != std::string::npos) {
+        size_t end = result.find("[/End thinking]", pos);
+        if (end != std::string::npos) {
+            end += 17;
+            while (end < result.size() && (result[end] == ' ' || result[end] == '\t' || result[end] == '\n' || result[end] == '\r'))
+                ++end;
+            result.erase(pos, end - pos);
+        } else {
+            // Also check for Thinking Process: pattern without explicit end
+            size_t thinkEnd = result.find("<channel|>", pos);
+            if (thinkEnd != std::string::npos) {
+                thinkEnd += 10;
+                while (thinkEnd < result.size() && (result[thinkEnd] == ' ' || result[thinkEnd] == '\t' || result[thinkEnd] == '\n' || result[thinkEnd] == '\r'))
+                    ++thinkEnd;
+                result.erase(pos, thinkEnd - pos);
+            } else {
+                result.erase(pos);
+            }
+        }
+    }
+
     size_t start = result.find_first_not_of(" \t\n\r");
     return (start == std::string::npos) ? "" : result.substr(start);
 }
@@ -196,6 +234,10 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
             resolveGgufInt  ("general.sampling.penalty_last_n", 64,    gguf_repeat_last_n_);
 
             LOG_INFO("Model loaded successfully");
+
+            // Initialize chat templates (auto-detects Jinja vs legacy)
+            auto tmpl_ptr = common_chat_templates_init(shared_model_.get(), "", "", "");
+            chat_templates_ = tmpl_ptr.release();
         }
     }
 
@@ -231,6 +273,10 @@ Runner::~Runner() {
     if (context_) {
         llama_free(context_);
         context_ = nullptr;
+    }
+    if (chat_templates_) {
+        common_chat_templates_free(chat_templates_);
+        chat_templates_ = nullptr;
     }
 }
 
@@ -349,7 +395,7 @@ EmbedResult Runner::embed(const std::string& text) {
             return {false, {}, "Failed to get embeddings"};
         }
 
-        int n_embd = llama_model_n_embd(shared_model_.get());
+        int n_embd = llama_model_n_embd_out(shared_model_.get());
         std::vector<float> embedding(emb, emb + n_embd);
 
         llama_free(ctx);
@@ -749,29 +795,32 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
 }
 
 std::string Runner::formatPrompt(const std::string& content) {
-    // Apply chat template if model has one (instruct models)
-    // Pass through raw if no template (base models)
-    const char* tmpl = llama_model_chat_template(shared_model_.get(), nullptr);
-    if (!tmpl) {
+    if (!chat_templates_) {
         return content;
     }
 
-    llama_chat_message msg = {"user", content.c_str()};
-    int len = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
-    if (len < 0) {
-        return content;
+    common_chat_msg msg;
+    msg.role = "user";
+    msg.content = content;
+
+    common_chat_templates_inputs inputs;
+    inputs.messages = {msg};
+    inputs.use_jinja = true;
+    inputs.add_generation_prompt = true;
+    inputs.enable_thinking = true;
+
+    const char* thinking = std::getenv("NRVNA_THINKING");
+    if (thinking && std::string(thinking) == "0") {
+        inputs.enable_thinking = false;
     }
 
-    std::vector<char> buf(len + 1);
-    int res = llama_chat_apply_template(tmpl, &msg, 1, true, buf.data(), buf.size());
-    return (res > 0) ? std::string(buf.data(), res) : content;
+    auto params = common_chat_templates_apply(chat_templates_, inputs);
+    return params.prompt;
 }
 
 std::string Runner::formatMultimodalPrompt(const std::string& prompt, size_t imageCount, const char* marker) {
-    // Insert media markers if not present
     std::string content = prompt;
     if (prompt.find(marker) == std::string::npos) {
-        // Prepend markers (image before text, like reference)
         std::string prefix;
         for (size_t i = 0; i < imageCount; ++i) {
             prefix += marker;
@@ -779,22 +828,27 @@ std::string Runner::formatMultimodalPrompt(const std::string& prompt, size_t ima
         content = prefix + prompt;
     }
 
-    // Apply chat template if model has one (instruct models)
-    // Pass through raw if no template (base models)
-    const char* tmpl = llama_model_chat_template(shared_model_.get(), nullptr);
-    if (!tmpl) {
+    if (!chat_templates_) {
         return content;
     }
 
-    llama_chat_message msg = {"user", content.c_str()};
-    int len = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
-    if (len < 0) {
-        return content;
+    common_chat_msg msg;
+    msg.role = "user";
+    msg.content = content;
+
+    common_chat_templates_inputs inputs;
+    inputs.messages = {msg};
+    inputs.use_jinja = true;
+    inputs.add_generation_prompt = true;
+    inputs.enable_thinking = true;
+
+    const char* thinking = std::getenv("NRVNA_THINKING");
+    if (thinking && std::string(thinking) == "0") {
+        inputs.enable_thinking = false;
     }
 
-    std::vector<char> buf(len + 1);
-    int res = llama_chat_apply_template(tmpl, &msg, 1, true, buf.data(), buf.size());
-    return (res > 0) ? std::string(buf.data(), res) : content;
+    auto params = common_chat_templates_apply(chat_templates_, inputs);
+    return params.prompt;
 }
 
 std::vector<mtmd_bitmap*> Runner::loadImages(const std::vector<std::filesystem::path>& imagePaths) const {
