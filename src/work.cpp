@@ -11,6 +11,7 @@
 #include <fstream>
 #include <chrono>
 #include <sstream>
+#include <iomanip>
 #include <atomic>
 #include <algorithm>
 #include <cctype>
@@ -265,11 +266,13 @@ JobId Work::generateId() {
     static std::atomic<uint64_t> counter{0};
 
     auto now = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::chrono::system_clock::now().time_since_epoch()).count();
     uint64_t unique_counter = counter.fetch_add(1);
 
     std::stringstream ss;
-    ss << std::to_string(now) << "_" << getpid() << "_" << unique_counter;
+    ss << std::setw(20) << std::setfill('0') << now
+       << "_" << getpid()
+       << "_" << std::setw(6) << std::setfill('0') << unique_counter;
     return ss.str();
 }
 
@@ -314,7 +317,9 @@ bool Work::writeImageFiles(const JobId& jobId, const std::vector<std::filesystem
                 return false;
             }
             std::string ext = srcPath.extension().string();
-            std::string destFilename = "image_" + std::to_string(idx) + ext;
+            std::ostringstream filename;
+            filename << "image_" << std::setw(6) << std::setfill('0') << idx << ext;
+            std::string destFilename = filename.str();
             auto destPath = imagesDir / destFilename;
             std::error_code ec;
             if (sameFilesystem(srcPath, imagesDir)) {

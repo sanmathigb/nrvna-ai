@@ -364,6 +364,7 @@ EmbedResult Runner::embed(const std::string& text) {
         llama_context_params ctx_params = llama_context_default_params();
         ctx_params.n_ctx = tokens.size() + 1;
         ctx_params.n_batch = tokens.size();
+        ctx_params.n_ubatch = tokens.size();  // encoder requires n_ubatch >= n_tokens
         ctx_params.embeddings = true;
         ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;  // Mean pooling for sentence embeddings
         if (env_int("NRVNA_GPU_LAYERS", 0) <= 0) {
@@ -576,45 +577,66 @@ RunResult Runner::runText(const std::string& prompt) {
         LOG_DEBUG("Context: " + std::to_string(ctx_params.n_ctx) + " tokens");
 
         smpl = buildSampler(config);
-        llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-        
+
         llama_token decoder_start_token_id = 0;
         if (llama_model_has_encoder(shared_model_.get())) {
-            if (llama_encode(context_, batch)) {
+            llama_batch enc_batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
+            if (llama_encode(context_, enc_batch)) {
                 LOG_ERROR("Failed to encode");
                 llama_sampler_free(smpl);
                 llama_free(context_);
                 context_ = nullptr;
                 return {false, "", "Failed to encode"};
             }
-            
+
             decoder_start_token_id = llama_model_decoder_start_token(shared_model_.get());
             if (decoder_start_token_id == LLAMA_TOKEN_NULL) {
                 decoder_start_token_id = llama_vocab_bos(vocab);
             }
-            
-            batch = llama_batch_get_one(&decoder_start_token_id, 1);
         }
-        
-        std::string output;
-        llama_token new_token_id;
+
+        // Decode prompt in n_batch-sized chunks (reference: simple.cpp)
+        int n_batch = ctx_params.n_batch;
         int n_pos = 0;
 
-        for (; n_pos + batch.n_tokens < n_prompt + config.n_predict; ) {
-            if (llama_decode(context_, batch)) {
-                LOG_ERROR("Failed to decode");
-                break;
+        if (decoder_start_token_id != 0) {
+            // Encoder model: decode the start token
+            llama_batch start_batch = llama_batch_get_one(&decoder_start_token_id, 1);
+            if (llama_decode(context_, start_batch)) {
+                LOG_ERROR("Failed to decode start token");
+                llama_sampler_free(smpl);
+                llama_free(context_);
+                context_ = nullptr;
+                return {false, "", "Failed to decode start token"};
             }
-            
-            n_pos += batch.n_tokens;
-            
+            n_pos = 1;
+        } else {
+            // Standard model: decode prompt in chunks
+            for (int i = 0; i < n_prompt; i += n_batch) {
+                int n_eval = std::min(n_batch, n_prompt - i);
+                llama_batch batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
+                if (llama_decode(context_, batch)) {
+                    LOG_ERROR("Failed to decode prompt chunk");
+                    llama_sampler_free(smpl);
+                    llama_free(context_);
+                    context_ = nullptr;
+                    return {false, "", "Failed to decode prompt"};
+                }
+                n_pos += n_eval;
+            }
+        }
+
+        std::string output;
+        llama_token new_token_id;
+
+        for (; n_pos < n_prompt + config.n_predict; ) {
             new_token_id = llama_sampler_sample(smpl, context_, -1);
             llama_sampler_accept(smpl, new_token_id);
-            
+
             if (llama_vocab_is_eog(vocab, new_token_id)) {
                 break;
             }
-            
+
             char buf[128];
             int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
             if (n < 0) {
@@ -623,8 +645,13 @@ RunResult Runner::runText(const std::string& prompt) {
             }
             
             output.append(buf, n);
-            
-            batch = llama_batch_get_one(&new_token_id, 1);
+
+            llama_batch gen_batch = llama_batch_get_one(&new_token_id, 1);
+            if (llama_decode(context_, gen_batch)) {
+                LOG_ERROR("Failed to decode generated token");
+                break;
+            }
+            n_pos += 1;
         }
 
         llama_sampler_free(smpl);
