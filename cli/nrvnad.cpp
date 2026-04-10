@@ -33,13 +33,6 @@ void signalHandler(int signal) {
     g_shutdown_requested = 1;
 }
 
-std::string trim(std::string value) {
-    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
-    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
-    return value;
-}
-
 std::string toLower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -267,17 +260,36 @@ int main(int argc, char * argv[]) {
     std::vector<std::string> positionalArgs;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-w" || arg == "--workers") && i + 1 < argc) {
+        if (arg == "-w" || arg == "--workers") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --workers requires a value\n";
+                return 1;
+            }
             try {
                 workers = std::stoi(argv[++i]);
             } catch (...) {
                 std::cerr << "Error: Invalid worker count\n";
                 return 1;
             }
-        } else if (arg == "--mmproj" && i + 1 < argc) {
+            if (workers < 1 || workers > 64) {
+                std::cerr << "Error: worker count must be between 1 and 64\n";
+                return 1;
+            }
+        } else if (arg == "--mmproj") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --mmproj requires a path\n";
+                return 1;
+            }
             mmprojPath = argv[++i];
-        } else if (arg == "--vocoder" && i + 1 < argc) {
+        } else if (arg == "--vocoder") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --vocoder requires a path\n";
+                return 1;
+            }
             vocoderPath = argv[++i];
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "Error: unknown option: " << arg << "\n";
+            return 1;
         } else if (!arg.empty() && arg[0] != '-') {
             positionalArgs.push_back(arg);
         }
@@ -290,12 +302,8 @@ int main(int argc, char * argv[]) {
         workspace = positionalArgs[1];
     }
     if (positionalArgs.size() > 2) {
-        try {
-            int w = std::stoi(positionalArgs[2]);
-            if (w >= 1 && w <= 64) workers = w;
-        } catch (...) {
-            std::cerr << "Warning: invalid worker count '" << positionalArgs[2] << "', using default " << workers << "\n";
-        }
+        std::cerr << "Error: unexpected extra positional argument: " << positionalArgs[2] << "\n";
+        return 1;
     }
 
     if (modelPath.empty()) {

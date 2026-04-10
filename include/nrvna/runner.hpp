@@ -112,8 +112,8 @@ private:
     llama_context* context_ = nullptr;
     mtmd_context* mtmd_ctx_ = nullptr;
 
-    // Per-instance chat templates (initialized at model load, destroyed with model)
-    common_chat_templates* chat_templates_ = nullptr;
+    // Shared chat templates (initialized once at model load, like shared_model_)
+    static common_chat_templates* chat_templates_;
 };
 
 }

@@ -23,6 +23,8 @@ std::shared_ptr<llama_model> Runner::shared_model_ = nullptr;
 std::string Runner::current_model_path_ = "";
 std::mutex Runner::model_mutex_;
 
+common_chat_templates* Runner::chat_templates_ = nullptr;
+
 // GGUF sampling defaults — hardcoded fallbacks until model is loaded
 float Runner::gguf_temp_           = 0.8f;
 int   Runner::gguf_top_k_          = 40;
@@ -204,6 +206,12 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
                 throw std::runtime_error("Failed to load model: " + modelPath);
             }
 
+            // Free old chat templates before replacing model
+            if (chat_templates_) {
+                common_chat_templates_free(chat_templates_);
+                chat_templates_ = nullptr;
+            }
+
             shared_model_ = std::shared_ptr<llama_model>(model, llama_model_free);
             current_model_path_ = modelPath;
 
@@ -274,10 +282,7 @@ Runner::~Runner() {
         llama_free(context_);
         context_ = nullptr;
     }
-    if (chat_templates_) {
-        common_chat_templates_free(chat_templates_);
-        chat_templates_ = nullptr;
-    }
+    // chat_templates_ is static/shared — freed on model replacement, not per-instance
 }
 
 Runner::SamplingConfig Runner::buildSamplingConfig() const {

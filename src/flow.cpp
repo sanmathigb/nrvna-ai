@@ -38,9 +38,22 @@ std::optional<Job> Flow::latest() const noexcept {
 }
 
 bool Flow::isValidJobId(const JobId& id) noexcept {
-    if (id.empty()) return false;
+    if (id.empty() || id.size() > 128) return false;
+    if (id.front() == '_' || id.back() == '_') return false;
+
+    bool prev_underscore = false;
     for (char c : id) {
-        if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_') return false;
+        if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_') {
+            return false;
+        }
+        if (c == '_') {
+            if (prev_underscore) {
+                return false;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
     }
     return true;
 }
@@ -245,6 +258,43 @@ std::optional<JobMeta> Flow::meta(const JobId& id) const noexcept {
             }
         }
         return std::nullopt;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+static std::size_t countSubdirs(const std::filesystem::path& dir) noexcept {
+    std::size_t n = 0;
+    try {
+        if (!std::filesystem::exists(dir)) return 0;
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (entry.is_directory()) ++n;
+        }
+    } catch (...) {}
+    return n;
+}
+
+WorkspaceCounts Flow::counts() const noexcept {
+    WorkspaceCounts c;
+    c.queued  = countSubdirs(workspace_ / "input" / "ready");
+    c.running = countSubdirs(workspace_ / "processing");
+    c.done    = countSubdirs(workspace_ / "output");
+    c.failed  = countSubdirs(workspace_ / "failed");
+    return c;
+}
+
+std::optional<Job> Flow::latestInDir(const std::filesystem::path& dir) const noexcept {
+    try {
+        if (!std::filesystem::exists(dir)) return std::nullopt;
+        std::optional<Job> newest;
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (!entry.is_directory()) continue;
+            auto ts = toSystemTime(std::filesystem::last_write_time(entry));
+            if (!newest || ts > newest->timestamp) {
+                newest = Job{entry.path().filename().string(), Status::Done, "", ts};
+            }
+        }
+        return newest;
     } catch (...) {
         return std::nullopt;
     }

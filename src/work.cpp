@@ -41,18 +41,6 @@ std::string toLowerCopy(std::string value) {
     return value;
 }
 
-bool sameFilesystem(const std::filesystem::path& src, const std::filesystem::path& destDir) {
-    struct stat src_stat;
-    struct stat dest_stat;
-    if (::stat(src.c_str(), &src_stat) != 0) {
-        return false;
-    }
-    if (::stat(destDir.c_str(), &dest_stat) != 0) {
-        return false;
-    }
-    return src_stat.st_dev == dest_stat.st_dev;
-}
-
 bool validateImagePath(const std::filesystem::path& path, SubmissionError& code, std::string& error) {
     if (!std::filesystem::exists(path)) {
         error = "Image file not found: " + path.string();
@@ -322,16 +310,9 @@ bool Work::writeImageFiles(const JobId& jobId, const std::vector<std::filesystem
             std::string destFilename = filename.str();
             auto destPath = imagesDir / destFilename;
             std::error_code ec;
-            if (sameFilesystem(srcPath, imagesDir)) {
-                // Use absolute path so symlink survives job directory moves
-                std::filesystem::create_symlink(std::filesystem::absolute(srcPath), destPath, ec);
-                if (ec) {
-                    ec.clear();
-                    std::filesystem::copy_file(srcPath, destPath, std::filesystem::copy_options::overwrite_existing, ec);
-                }
-            } else {
-                std::filesystem::copy_file(srcPath, destPath, std::filesystem::copy_options::overwrite_existing, ec);
-            }
+            // Jobs must remain self-contained after submission. Always copy source
+            // images into the staged job directory instead of linking back out.
+            std::filesystem::copy_file(srcPath, destPath, std::filesystem::copy_options::overwrite_existing, ec);
             if (ec) {
                 LOG_ERROR("Failed to write image file: " + srcPath.string());
                 return false;

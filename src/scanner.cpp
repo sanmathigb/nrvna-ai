@@ -5,6 +5,7 @@
  */
 
 #include "nrvna/scanner.hpp"
+#include "nrvna/flow.hpp"
 #include "nrvna/logger.hpp"
 #include <algorithm>
 #include <fstream>
@@ -27,7 +28,7 @@ std::vector<JobId> Scanner::scan() const noexcept {
         for (const auto& entry : std::filesystem::directory_iterator(readyPath_)) {
             if (entry.is_directory()) {
                 JobId jobId = extractJobId(entry.path());
-                if (!jobId.empty() && isValidJobDirectory(entry.path())) {
+                if (Flow::isValidJobId(jobId) && isValidJobDirectory(entry.path())) {
                     jobs.push_back(jobId);
                     LOG_TRACE("Found job: " + jobId);
                 }
@@ -57,7 +58,9 @@ bool Scanner::hasNewJobs() const noexcept {
         }
 
         for (const auto& entry : std::filesystem::directory_iterator(readyPath_)) {
-            if (entry.is_directory() && isValidJobDirectory(entry.path())) {
+            if (entry.is_directory() &&
+                Flow::isValidJobId(extractJobId(entry.path())) &&
+                isValidJobDirectory(entry.path())) {
                 return true;
             }
         }
@@ -77,7 +80,9 @@ std::size_t Scanner::readyJobCount() const noexcept {
         }
 
         for (const auto& entry : std::filesystem::directory_iterator(readyPath_)) {
-            if (entry.is_directory() && isValidJobDirectory(entry.path())) {
+            if (entry.is_directory() &&
+                Flow::isValidJobId(extractJobId(entry.path())) &&
+                isValidJobDirectory(entry.path())) {
                 ++count;
             }
         }

@@ -2,46 +2,43 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Build agents, pipelines, and batch workflows with local LLMs. Three commands. Filesystem is the queue. Shell is the orchestrator.
-
-```
-          wrk                    nrvnad                    flw
-           │                        │                        │
-   "prompt" ──▶ input/ready/ ──▶ processing/ ──▶ output/ ──▶ result
-           │                        │                        │
-       (submit)              (workers churn)            (collect)
-```
-
-No frameworks. No Python dependencies. Just three binaries that compose like Unix pipes — small enough to understand in minutes, powerful enough to build agent systems with shell scripts.
-
-## Install
-
-```bash
-git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
-cd nrvna-ai
-cmake -S . -B build && cmake --build build -j4
-sudo cmake --install build
-```
-
-All dependencies are vendored. llama.cpp is built automatically — no separate install, no conflicts.
+Local inference as durable jobs. Three binaries. Filesystem is the queue.
 
 ## Quick Start
 
+One prompt, one result — proof of life in 60 seconds:
+
 ```bash
-# Interactive — pick a model, assign a workspace, start
-nrvnad
+# Build
+git clone --recursive https://github.com/sanmathigb/nrvna-ai.git
+cd nrvna-ai && cmake -S . -B build && cmake --build build -j4
 
-# Or start directly
-nrvnad model.gguf workspace
-
-# Submit work (returns immediately)
-JOB=$(wrk workspace "What is 2+2?")
-
-# Collect result
-flw workspace $JOB
+# Start a daemon with any GGUF model
+./build/nrvnad models/your-model.gguf /tmp/ws -w 1 &
+while [ ! -f /tmp/ws/.nrvnad.pid ]; do sleep 1; done
+JOB=$(./build/wrk /tmp/ws "Explain the CAP theorem in two sentences")
+./build/flw /tmp/ws -w $JOB
 ```
 
-Place GGUF models in `./models/` or set `NRVNA_MODELS_DIR`.
+## See It Work
+
+Submit multiple jobs, inspect workspace progress, and collect results:
+
+```bash
+# Queue a few jobs
+JOB1=$(./build/wrk /tmp/ws "Explain Raft in two sentences")
+JOB2=$(./build/wrk /tmp/ws "Summarize the CAP theorem in one sentence")
+
+# Inspect workspace status
+./build/flw /tmp/ws
+./build/flw /tmp/ws --json
+
+# Retrieve results
+./build/flw /tmp/ws -w $JOB1
+./build/flw /tmp/ws -w $JOB2
+```
+
+The substrate is the point: durable jobs, inspectable state, and predictable retrieval through the same three binaries.
 
 ## Three Primitives
 
@@ -53,65 +50,32 @@ Place GGUF models in `./models/` or set `NRVNA_MODELS_DIR`.
 
 That's the entire API. Everything else is composition.
 
+```bash
+# Start a daemon
+./build/nrvnad models/Qwen2.5-7B-Instruct-Q4_K_M.gguf ./ws -w 1 &
+while [ ! -f ./ws/.nrvnad.pid ]; do sleep 1; done
+
+# Submit work
+JOB=$(./build/wrk ./ws "Explain the CAP theorem in two sentences")
+
+# Collect result
+./build/flw ./ws -w $JOB
+```
+
 ## Job Types
 
 ```bash
 # Text (default)
-wrk workspace "Summarize this document"
+wrk ./ws "Summarize this document"
 
-# Vision — describe, caption, OCR (mmproj auto-detected)
-wrk workspace "What's in this image?" --image photo.jpg
+# Vision — caption, describe, OCR (mmproj auto-detected)
+wrk ./ws "What's in this image?" --image photo.jpg
 
-# Embeddings — vector representations for search/similarity
-wrk workspace "sentence to embed" --embed
+# Embeddings — vectors for search/similarity
+wrk ./ws "sentence to embed" --embed
 
-# Text-to-speech — generate audio (vocoder auto-detected for OuteTTS models)
-wrk workspace "Hello, world" --tts
-```
-
-## What Emerges
-
-The primitives are small. What you build with them isn't.
-
-**Agent loop** — feed results back as prompts:
-```bash
-for i in {1..5}; do
-  result=$(wrk workspace "Continue: $memory" | xargs flw workspace -w)
-  memory="$memory\n$result"
-done
-```
-
-**Fan-out / fan-in** — parallelize, then synthesize:
-```bash
-a=$(wrk workspace "Research: databases")
-b=$(wrk workspace "Research: caching")
-c=$(wrk workspace "Research: queuing")
-wrk workspace "Synthesize: $(flw workspace $a) $(flw workspace $b) $(flw workspace $c)"
-```
-
-**Multi-model routing** — different models for different tasks:
-```bash
-nrvnad qwen-vl.gguf   ws-vision    # mmproj auto-detected
-nrvnad codellama.gguf  ws-code
-nrvnad phi-3.gguf      ws-fast
-
-wrk ws-vision "Describe this" --image photo.jpg
-wrk ws-code   "Refactor: $(cat main.py)"
-wrk ws-fast   "Classify: bug or feature?"
-```
-
-**Batch processing** — queue hundreds, workers churn through them:
-```bash
-for img in photos/*.jpg; do
-  wrk workspace "Caption this" --image "$img"
-done
-```
-
-**Memory** — job history is context history:
-```bash
-flw workspace $job1 >> memory.txt
-flw workspace $job2 >> memory.txt
-wrk workspace "Given this context: $(cat memory.txt) — what next?"
+# Text-to-speech — audio output (vocoder auto-detected)
+wrk ./ws "Hello, world" --tts
 ```
 
 ## How It Works
@@ -122,33 +86,42 @@ Jobs are directories. State is location. Transitions are atomic renames.
 workspace/
 ├── input/ready/    ← queued jobs
 ├── processing/     ← jobs being worked
-├── output/         ← completed results (result.txt, embedding.json, or audio.wav)
+├── output/         ← results (result.txt, embedding.json, or audio.wav)
 └── failed/         ← errors (error.txt)
 ```
 
-No database. No message broker. No runtime dependencies. The filesystem is the coordination layer — you can inspect it with `ls`, debug it with `cat`, monitor it with `watch`.
+No database. No message broker. No runtime dependencies. Every job is fresh — bounded context, no session drift, predictable output.
 
-## Platform Support
+## Workflows
+
+Workflows sit above the core release surface. Common patterns are:
+
+- multi-job text processing
+- multimodal ingestion
+- chunked TTS or transcription
+- map-reduce over large documents
+
+## Why
+
+nrvna is compelling when the job is bigger than one prompt and smaller than a whole framework.
+
+- **Not a chat app** — async jobs, not conversations
+- **Not an agent framework** — primitives you build on
+- **Not a model runtime** — that's llama.cpp underneath. nrvna adds jobs, workspaces, and composition.
+
+## Platform
 
 | Platform | Backend |
 |----------|---------|
 | macOS (Apple Silicon) | Metal GPU acceleration |
-| macOS (Intel) | CPU |
+| macOS (Intel + discrete GPU) | Metal with local patch |
 | Linux | CPU, CUDA if available |
 
 ## Requirements
 
 - macOS or Linux
 - CMake 3.16+ and a C++17 compiler
-- A GGUF model ([HuggingFace](https://huggingface.co/models?search=gguf))
-
-## Documentation
-
-| Doc | Description |
-|-----|-------------|
-| [QUICKSTART.md](QUICKSTART.md) | Get running in 5 minutes |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Internals: components, threading, state machine |
-| [ADVANCED.md](ADVANCED.md) | Patterns: batch, fan-out, loops, memory, routing |
+- GGUF models you provide yourself ([HuggingFace](https://huggingface.co/models?search=gguf))
 
 ## License
 

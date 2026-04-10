@@ -23,6 +23,13 @@ struct Job {
     std::chrono::system_clock::time_point timestamp;
 };
 
+struct WorkspaceCounts {
+    std::size_t queued = 0;
+    std::size_t running = 0;
+    std::size_t done = 0;
+    std::size_t failed = 0;
+};
+
 class Flow {
 public:
     explicit Flow(const std::filesystem::path& workspace) noexcept;
@@ -36,6 +43,8 @@ public:
     [[nodiscard]] std::optional<Job> get(const JobId& id) const noexcept;
     [[nodiscard]] std::vector<Job> list(std::size_t max = 10) const noexcept;
     [[nodiscard]] Status status(const JobId& id) const noexcept;
+    [[nodiscard]] WorkspaceCounts counts() const noexcept;
+    [[nodiscard]] std::optional<Job> latestInDir(const std::filesystem::path& dir) const noexcept;
 
     [[nodiscard]] static bool isValidJobId(const JobId& id) noexcept;
     [[nodiscard]] bool exists(const JobId& id) const noexcept;

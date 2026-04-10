@@ -24,9 +24,12 @@ flw
 *.swo
 *~
 .DS_Store
+.claude/
 
 # AI assistant configuration (local only)
 CLAUDE.md
+agents/
+opencode.json
 
 # CMake generated files
 CMakeCache.txt
@@ -44,6 +47,8 @@ coverage/
 *.tmp
 *.log
 .cache/
+*.cast
+output.wav
 
 # Model files (can be large)
 *.gguf
@@ -56,6 +61,53 @@ data/
 *.workspace/
 *_ws/
 test_workspace/
+.decompose-text/
+.nrvna-workspaces
+ws-*/
+ws-embed/
+ws-text/
+ws-tts/
 
 # Test artifacts
 test_template
+test-document.txt
+
+# Local docs / notes not meant for release
+docs/index.html
+docs/README.md
+docs/cookbooks/
+docs/diagrams/
+docs/superpowers/
+notes/
+topics/
+
+# Generated docs (local experiments, not part of release)
+CONFIDENCE.md
+GAI.md
+LOCAL_INFERENCE_RECOMMENDATIONS.md
+MODEL_ARCHITECTURE_MATRIX.md
+MODEL_ONBOARDING.md
+ROADMAP.md
+TUTORIAL_*.md
+UPSTREAM_AUDIT_AND_STRATEGY.md
+WORKBOOK.md
+
+# Scripts (local workflow utilities, not shipped)
+scripts/_cosine_rank.py
+scripts/decompose-text
+scripts/image-embed-eval
+scripts/image-search
+scripts/image-search-metadata
+scripts/media-search
+scripts/media-search-eval
+scripts/narrate
+scripts/nrvna-lib.sh
+scripts/transcribe
+
+# Local experiment artifacts
+.opencode/
+!README.md
+!QUICKSTART.md
+!ADVANCED.md
+!ARCHITECTURE.md
+!LICENSE
