@@ -30,15 +30,17 @@ void printUsage(const char* progName) {
     std::cout << "  -h, --help    Show this help message\n";
     std::cout << "  -v, --version Show version\n\n";
     std::cout << "Behavior:\n";
-    std::cout << "  - If job_id provided: retrieve specific job\n";
-    std::cout << "  - If no job_id: retrieve latest completed job\n";
-    std::cout << "  - Can read job_id from stdin for piping\n\n";
+    std::cout << "  - No job_id: show workspace status (counts + recent jobs)\n";
+    std::cout << "  - With job_id: retrieve that job's result\n";
+    std::cout << "  - With -w and job_id: wait for job to complete, then print result\n";
+    std::cout << "  - Piped input: reads job_id from stdin (wrk ... | flw <ws> -w)\n\n";
     std::cout << "Environment Variables:\n";
     std::cout << "  NRVNA_LOG_LEVEL    Log level (ERROR, WARN, INFO, DEBUG, TRACE)\n\n";
     std::cout << "Examples:\n";
-    std::cout << "  " << progName << " ./workspace\n";
-    std::cout << "  " << progName << " ./workspace -w abc123\n";
-    std::cout << "  wrk ./workspace \"Hello\" | " << progName << " ./workspace -w\n";
+    std::cout << "  " << progName << " ./ws                      Show workspace status\n";
+    std::cout << "  " << progName << " ./ws --json               Status as JSON\n";
+    std::cout << "  " << progName << " ./ws -w <job_id>          Wait and print result\n";
+    std::cout << "  wrk ./ws \"Hello\" | " << progName << " ./ws -w   Submit and collect\n";
 }
 
 std::string escapeJson(const std::string& s) {
@@ -138,6 +140,41 @@ int main(int argc, char* argv[]) {
 
     try {
         Flow flow(workspace);
+
+        // No job ID and no pipe: show workspace status
+        if (jobId.empty() && !wait) {
+            auto c = flow.counts();
+            if (json) {
+                std::cout << "{\"queued\":" << c.queued
+                          << ",\"running\":" << c.running
+                          << ",\"done\":" << c.done
+                          << ",\"failed\":" << c.failed << "}\n";
+                return 0;
+            }
+
+            std::cout << "queued:     " << c.queued << "\n"
+                      << "running:    " << c.running << "\n"
+                      << "done:       " << c.done << "\n"
+                      << "failed:     " << c.failed << "\n";
+
+            // Show recent jobs with duration from meta.json
+            auto recentJobs = flow.list(5);
+            if (!recentJobs.empty()) {
+                std::cout << "\nrecent:\n";
+                for (const auto& job : recentJobs) {
+                    const char* tag = job.status == Status::Failed ? "failed" : "done";
+                    auto m = flow.meta(job.id);
+                    if (m && m->duration_s >= 0.0) {
+                        char dur[16];
+                        std::snprintf(dur, sizeof(dur), "%5.1fs", m->duration_s);
+                        std::cout << "  [" << tag << "] " << dur << "  " << job.id << "\n";
+                    } else {
+                        std::cout << "  [" << tag << "]        " << job.id << "\n";
+                    }
+                }
+            }
+            return 0;
+        }
 
         // Resolve ID (Specific or Latest)
         if (jobId.empty()) {
