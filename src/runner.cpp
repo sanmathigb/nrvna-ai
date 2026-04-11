@@ -602,7 +602,6 @@ RunResult Runner::runText(const std::string& prompt) {
 
         // Decode prompt in n_batch-sized chunks (reference: simple.cpp)
         int n_batch = ctx_params.n_batch;
-        int n_pos = 0;
 
         if (decoder_start_token_id != 0) {
             // Encoder model: decode the start token
@@ -614,7 +613,6 @@ RunResult Runner::runText(const std::string& prompt) {
                 context_ = nullptr;
                 return {false, "", "Failed to decode start token"};
             }
-            n_pos = 1;
         } else {
             // Standard model: decode prompt in chunks
             for (int i = 0; i < n_prompt; i += n_batch) {
@@ -627,14 +625,14 @@ RunResult Runner::runText(const std::string& prompt) {
                     context_ = nullptr;
                     return {false, "", "Failed to decode prompt"};
                 }
-                n_pos += n_eval;
             }
         }
 
         std::string output;
         llama_token new_token_id;
 
-        for (; n_pos < n_prompt + config.n_predict; ) {
+        int generated = 0;
+        for (; generated < config.n_predict; ) {
             new_token_id = llama_sampler_sample(smpl, context_, -1);
             llama_sampler_accept(smpl, new_token_id);
 
@@ -656,7 +654,7 @@ RunResult Runner::runText(const std::string& prompt) {
                 LOG_ERROR("Failed to decode generated token");
                 break;
             }
-            n_pos += 1;
+            generated += 1;
         }
 
         llama_sampler_free(smpl);

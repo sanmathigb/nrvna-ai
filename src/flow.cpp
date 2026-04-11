@@ -27,11 +27,25 @@ Flow::Flow(const std::filesystem::path& workspace) noexcept
 
 std::optional<Job> Flow::latest() const noexcept {
     try {
-        std::vector<Job> jobs = list(1);
-        if (jobs.empty()) {
-            return std::nullopt;
+        std::optional<Job> newest;
+        const std::pair<std::filesystem::path, Status> dirs[] = {
+            {workspace_ / "output", Status::Done},
+            {workspace_ / "failed", Status::Failed},
+            {workspace_ / "processing", Status::Running},
+            {workspace_ / "input" / "ready", Status::Queued},
+        };
+
+        for (const auto& [dir, status] : dirs) {
+            auto latest = latestInDir(dir);
+            if (!latest.has_value()) {
+                continue;
+            }
+            latest->status = status;
+            if (!newest.has_value() || latest->timestamp > newest->timestamp) {
+                newest = latest;
+            }
         }
-        return jobs[0];
+        return newest;
     } catch (...) {
         return std::nullopt;
     }
@@ -289,9 +303,11 @@ std::optional<Job> Flow::latestInDir(const std::filesystem::path& dir) const noe
         std::optional<Job> newest;
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
             if (!entry.is_directory()) continue;
+            auto jobId = entry.path().filename().string();
+            if (!isValidJobId(jobId)) continue;
             auto ts = toSystemTime(std::filesystem::last_write_time(entry));
             if (!newest || ts > newest->timestamp) {
-                newest = Job{entry.path().filename().string(), Status::Done, "", ts};
+                newest = Job{jobId, Status::Missing, "", ts};
             }
         }
         return newest;

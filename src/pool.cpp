@@ -77,27 +77,36 @@ void Pool::stop() noexcept {
         while (!jobQueue_.empty()) {
             jobQueue_.pop();
         }
+        enqueuedJobs_.clear();
     }
     
     LOG_INFO("Pool stopped");
 }
 
-void Pool::submit(const JobId& jobId) noexcept {
+bool Pool::submit(const JobId& jobId) noexcept {
     if (!running_.load() || shutdown_.load()) {
         LOG_DEBUG("Cannot submit job to stopped pool: " + jobId);
-        return;
+        return false;
     }
 
     try {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex_);
-            jobQueue_.push(jobId);
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        
+        // Check if job is already in the queue to prevent duplicates
+        if (isJobInQueue(jobId)) {
+            LOG_DEBUG("Job already in queue, skipping duplicate: " + jobId);
+            return false;
         }
+        
+        jobQueue_.push(jobId);
+        enqueuedJobs_.insert(jobId);
         
         jobAvailable_.notify_one();
         LOG_DEBUG("Job queued: " + jobId);
+        return true;
     } catch (...) {
         LOG_ERROR("Failed to queue job: " + jobId);
+        return false;
     }
 }
 
@@ -108,6 +117,10 @@ std::size_t Pool::queueSize() const noexcept {
     } catch (...) {
         return 0;
     }
+}
+
+bool Pool::isJobInQueue(const JobId& jobId) const {
+    return enqueuedJobs_.find(jobId) != enqueuedJobs_.end();
 }
 
 void Pool::workerLoop(int workerId) {
@@ -138,6 +151,7 @@ void Pool::workerLoop(int workerId) {
                 
                 jobId = jobQueue_.front();
                 jobQueue_.pop();
+                enqueuedJobs_.erase(jobId);
             }
             
             // Process job outside of lock

@@ -9,6 +9,7 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <unordered_set>
 #include <thread>
 #include <vector>
 
@@ -30,7 +31,7 @@ public:
 
     [[nodiscard]] bool start(JobProcessor processor);
     void stop() noexcept;
-    void submit(const JobId& jobId) noexcept;
+    [[nodiscard]] bool submit(const JobId& jobId) noexcept;
     
     [[nodiscard]] bool isRunning() const noexcept { return running_.load(); }
     [[nodiscard]] std::size_t queueSize() const noexcept;
@@ -38,6 +39,7 @@ public:
 
 private:
     void workerLoop(int workerId);
+    bool isJobInQueue(const JobId& jobId) const;
     
     int workers_;
     JobProcessor processor_;
@@ -48,6 +50,7 @@ private:
     mutable std::mutex queueMutex_;
     std::condition_variable jobAvailable_;
     std::queue<JobId> jobQueue_;
+    std::unordered_set<JobId> enqueuedJobs_;
     
     std::vector<std::thread> workerThreads_;
 };
