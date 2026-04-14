@@ -43,7 +43,14 @@ bool Pool::start(JobProcessor processor) {
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to start pool: " + std::string(e.what()));
+        // Signal shutdown and join any threads that were already created
+        shutdown_.store(true);
         running_.store(false);
+        jobAvailable_.notify_all();
+        for (auto& t : workerThreads_) {
+            if (t.joinable()) t.join();
+        }
+        workerThreads_.clear();
         return false;
     }
 }

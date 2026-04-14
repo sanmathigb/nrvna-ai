@@ -77,7 +77,7 @@ static std::string stripThinkBlocks(const std::string& text) {
     while ((pos = result.find("[Start thinking]", pos)) != std::string::npos) {
         size_t end = result.find("[/End thinking]", pos);
         if (end != std::string::npos) {
-            end += 17;
+            end += 15; // strlen("[/End thinking]")
             while (end < result.size() && (result[end] == ' ' || result[end] == '\t' || result[end] == '\n' || result[end] == '\r'))
                 ++end;
             result.erase(pos, end - pos);
@@ -403,10 +403,19 @@ EmbedResult Runner::embed(const std::string& text) {
 
         int n_embd = llama_model_n_embd_out(shared_model_.get());
         std::vector<float> embedding(emb, emb + n_embd);
-
         llama_free(ctx);
 
-        LOG_INFO("Generated embedding with " + std::to_string(n_embd) + " dimensions");
+        // L2 normalize — upstream does this in common_embd_normalize(, , , 2)
+        // Without it, stored vectors aren't unit length, forcing every consumer
+        // to normalize at read time and breaking dot-product / vector DB assumptions.
+        double norm = 0.0;
+        for (float v : embedding) { norm += v * v; }
+        norm = std::sqrt(norm);
+        if (norm > 0.0) {
+            for (float& v : embedding) { v /= norm; }
+        }
+
+        LOG_INFO("Generated embedding with " + std::to_string(n_embd) + " dimensions (L2 normalized)");
         return {true, std::move(embedding), ""};
 
     } catch (const std::exception& e) {
@@ -521,6 +530,14 @@ EmbedResult Runner::embedVision(const std::string& prompt, const std::vector<std
 
         std::vector<float> embedding(emb, emb + n_embd);
         llama_free(ctx);
+
+        // L2 normalize — same as embed(), matches upstream common_embd_normalize(, , , 2)
+        double norm = 0.0;
+        for (float v : embedding) { norm += v * v; }
+        norm = std::sqrt(norm);
+        if (norm > 0.0) {
+            for (float& v : embedding) { v /= norm; }
+        }
 
         LOG_INFO("Generated multimodal embedding with " + std::to_string(n_embd) +
                  " dimensions from " + std::to_string(imagePaths.size()) + " image(s)");

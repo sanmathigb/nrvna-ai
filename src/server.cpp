@@ -52,6 +52,9 @@ bool Server::start() {
 
     LOG_INFO("Starting nrvna-ai server...");
 
+    // Reset shutdown flag so server is restartable after shutdown()
+    shutdown_.store(false);
+
     // Create workspace
     if (!createWorkspace()) {
         LOG_ERROR("Failed to create workspace");
@@ -129,6 +132,13 @@ bool Server::start() {
 
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to start server: " + std::string(e.what()));
+        // Clean up anything that was partially started
+        shutdown_.store(true);
+        running_.store(false);
+        if (pool_) pool_->stop();
+        processor_.reset();
+        pool_.reset();
+        scanner_.reset();
         return false;
     }
 }

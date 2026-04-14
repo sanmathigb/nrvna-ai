@@ -132,6 +132,9 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             mode = argv[++i];
+        } else if (arg.size() > 1 && arg[0] == '-' && arg[1] == '-') {
+            std::cerr << "Error: unknown option: " << arg << "\n";
+            return 1;
         }
     }
 
