@@ -197,15 +197,15 @@ int main(int argc, char* argv[]) {
 
         SubmitResult result;
         if (mode == "tts") {
-            result = work.submit(prompt, JobType::Tts, submitOptions);
+            result = work.submit(prompt, JobType::Tts, {}, submitOptions);
         } else if (useEmbed && !imagePaths.empty()) {
-            result = work.submit(prompt, imagePaths, JobType::Embed, submitOptions);
+            result = work.submit(prompt, JobType::Embed, imagePaths, submitOptions);
         } else if (useEmbed) {
-            result = work.submit(prompt, JobType::Embed, submitOptions);
+            result = work.submit(prompt, JobType::Embed, {}, submitOptions);
         } else if (!imagePaths.empty()) {
-            result = work.submit(prompt, imagePaths, submitOptions);
+            result = work.submit(prompt, JobType::Vision, imagePaths, submitOptions);
         } else {
-            result = work.submit(prompt, JobType::Text, submitOptions);
+            result = work.submit(prompt, JobType::Text, {}, submitOptions);
         }
 
         if (result.ok) {

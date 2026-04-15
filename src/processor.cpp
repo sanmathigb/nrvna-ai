@@ -10,10 +10,10 @@
 #include "nrvna/runner_tts.hpp"
 #include "nrvna/logger.hpp"
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <algorithm>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <mutex>
 
@@ -48,23 +48,38 @@ void writeCompletionMeta(const std::filesystem::path& jobPath,
     (void)nrvnaai::writeMetaJson(jobPath, meta);
 }
 
+void printJobStatus(const nrvnaai::JobId& id, const std::string& status, double elapsed = -1.0, const std::string& detail = "") {
+    std::lock_guard<std::mutex> lock(g_output_mutex);
+    const char* color = "\033[33m"; // yellow = running
+    if (status == "done")   color = "\033[32m";
+    if (status == "failed") color = "\033[31m";
+
+    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << id << "  " << color << status << "\033[0m";
+    if (elapsed >= 0.0) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "  %5.1fs", elapsed);
+        std::cout << buf;
+    }
+    if (!detail.empty()) {
+        std::cout << "  " << detail;
+    }
+    std::cout << "\n" << std::flush;
+}
+
+void completeJob(const std::filesystem::path& jobPath,
+                 double elapsed,
+                 const std::vector<std::string>& artifacts,
+                 const std::string& status) {
+    writeCompletionMeta(jobPath, elapsed, artifacts, status);
+}
+
 }
 
 namespace nrvnaai {
 
-Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath)
-    : workspace_(workspace), modelPath_(modelPath), mmprojPath_("") {
-    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_);
-}
-
-Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath)
-    : workspace_(workspace), modelPath_(modelPath), mmprojPath_(mmprojPath) {
-    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_ + " and mmproj: " + mmprojPath_);
-}
-
 Processor::Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath, const std::string& vocoderPath)
     : workspace_(workspace), modelPath_(modelPath), mmprojPath_(mmprojPath), vocoderPath_(vocoderPath) {
-    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_ + " and vocoder: " + vocoderPath_);
+    LOG_DEBUG("Processor created for workspace: " + workspace_.string() + " with model: " + modelPath_);
 }
 
 ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
@@ -77,10 +92,7 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             return ProcessResult::NotFound;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(g_output_mutex);
-            std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[33mrunning\033[0m\n" << std::flush;
-        }
+        printJobStatus(jobId, "running");
         auto startTime = std::chrono::steady_clock::now();
 
         // Step 2: Read prompt and route metadata
@@ -89,11 +101,8 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
         std::vector<std::filesystem::path> imagePaths = readImages(jobId);
         const bool allowEmptyPrompt = prompt.empty() && jobType == "embed" && !imagePaths.empty();
         if (prompt.empty() && !allowEmptyPrompt) {
-            writeCompletionMeta(getJobPath("processing", jobId), 0.0, {"error.txt"}, "failed");
-            {
-                std::lock_guard<std::mutex> lock(g_output_mutex);
-                std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  empty prompt\n" << std::flush;
-            }
+            completeJob(getJobPath("processing", jobId), 0.0, {"error.txt"}, "failed");
+            printJobStatus(jobId, "failed", 0.0, "empty prompt");
             (void)finalizeFailure(jobId, "Failed to read prompt file");
             return ProcessResult::Failed;
         }
@@ -102,11 +111,8 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
         if (jobType == "tts") {
             if (vocoderPath_.empty()) {
                 auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-                writeCompletionMeta(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
-                {
-                    std::lock_guard<std::mutex> lock(g_output_mutex);
-                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                }
+                completeJob(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
+                printJobStatus(jobId, "failed", elapsed);
                 (void)finalizeFailure(jobId, "TTS requires --vocoder flag");
                 return ProcessResult::Failed;
             }
@@ -114,24 +120,18 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             std::unique_ptr<TtsRunner>& ttsRunner = getTtsRunnerForWorker(workerId);
             if (!ttsRunner) {
                 auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-                writeCompletionMeta(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
-                {
-                    std::lock_guard<std::mutex> lock(g_output_mutex);
-                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  no TTS runner\n" << std::flush;
-                }
+                completeJob(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
+                printJobStatus(jobId, "failed", elapsed, "no TTS runner");
                 (void)finalizeFailure(jobId, "No TTS runner available");
                 return ProcessResult::SystemError;
             }
 
             auto ttsResult = ttsRunner->run(prompt);
+            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
             if (ttsResult.ok) {
-                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
                 if (finalizeAudio(jobId, ttsResult.audio, ttsResult.sample_rate)) {
-                    writeCompletionMeta(getJobPath("output", jobId), elapsed, {"audio.wav"}, "done");
-                    {
-                        std::lock_guard<std::mutex> lock(g_output_mutex);
-                        std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                    }
+                    completeJob(getJobPath("output", jobId), elapsed, {"audio.wav"}, "done");
+                    printJobStatus(jobId, "done", elapsed);
                     LOG_INFO("TTS COMPLETED: " + jobId + " -> " + std::to_string(ttsResult.audio.size()) + " samples");
                     return ProcessResult::Success;
                 } else {
@@ -139,18 +139,14 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                     if (!finalizeFailure(jobId, "Failed to write audio to output directory")) {
                         LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
                     } else {
-                        writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                        completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
                     }
                     return ProcessResult::SystemError;
                 }
             } else {
-                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-                {
-                    std::lock_guard<std::mutex> lock(g_output_mutex);
-                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                }
+                printJobStatus(jobId, "failed", elapsed);
                 if (finalizeFailure(jobId, ttsResult.error)) {
-                    writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                    completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
                 }
                 LOG_WARN("TTS job failed: " + jobId + " - " + ttsResult.error);
                 return ProcessResult::Failed;
@@ -161,11 +157,8 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
         std::unique_ptr<Runner>& runner = getRunnerForWorker(workerId);
         if (!runner) {
             auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-            writeCompletionMeta(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
-            {
-                std::lock_guard<std::mutex> lock(g_output_mutex);
-                std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  no runner\n" << std::flush;
-            }
+            completeJob(getJobPath("processing", jobId), elapsed, {"error.txt"}, "failed");
+            printJobStatus(jobId, "failed", elapsed, "no runner");
             (void)finalizeFailure(jobId, "No runner available");
             return ProcessResult::SystemError;
         }
@@ -174,14 +167,11 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             auto embedResult = imagePaths.empty()
                 ? runner->embed(prompt)
                 : runner->embedVision(prompt, imagePaths);
+            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
             if (embedResult.ok) {
-                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
                 if (finalizeEmbedding(jobId, embedResult.embedding)) {
-                    writeCompletionMeta(getJobPath("output", jobId), elapsed, {"embedding.json"}, "done");
-                    {
-                        std::lock_guard<std::mutex> lock(g_output_mutex);
-                        std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                    }
+                    completeJob(getJobPath("output", jobId), elapsed, {"embedding.json"}, "done");
+                    printJobStatus(jobId, "done", elapsed);
                     LOG_INFO("EMBED COMPLETED: " + jobId + " -> " + std::to_string(embedResult.embedding.size()) + " dims");
                     return ProcessResult::Success;
                 } else {
@@ -189,18 +179,14 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                     if (!finalizeFailure(jobId, "Failed to write embedding to output directory")) {
                         LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
                     } else {
-                        writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                        completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
                     }
                     return ProcessResult::SystemError;
                 }
             } else {
-                auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-                {
-                    std::lock_guard<std::mutex> lock(g_output_mutex);
-                        std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                }
+                printJobStatus(jobId, "failed", elapsed);
                 if (finalizeFailure(jobId, embedResult.error)) {
-                    writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                    completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
                 }
                 LOG_WARN("Embed job failed: " + jobId + " - " + embedResult.error);
                 return ProcessResult::Failed;
@@ -214,15 +200,11 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
             result = runner->run(prompt, imagePaths);
         }
 
-        // Step 4: Finalize based on result
+        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         if (result.ok) {
-            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
             if (finalizeSuccess(jobId, result.output)) {
-                writeCompletionMeta(getJobPath("output", jobId), elapsed, {"result.txt"}, "done");
-                {
-                    std::lock_guard<std::mutex> lock(g_output_mutex);
-                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[32mdone\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-                }
+                completeJob(getJobPath("output", jobId), elapsed, {"result.txt"}, "done");
+                printJobStatus(jobId, "done", elapsed);
                 LOG_INFO("JOB COMPLETED: " + jobId + " -> " + std::to_string(result.output.size()) + " chars");
                 return ProcessResult::Success;
             } else {
@@ -230,18 +212,14 @@ ProcessResult Processor::process(const JobId& jobId, int workerId) noexcept {
                 if (!finalizeFailure(jobId, "Failed to write result to output directory")) {
                     LOG_ERROR("STUCK JOB: " + jobId + " trapped in processing/ — manual intervention required");
                 } else {
-                    writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                    completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
                 }
                 return ProcessResult::SystemError;
             }
         } else {
-            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-            {
-                std::lock_guard<std::mutex> lock(g_output_mutex);
-                    std::cout << "    \033[90m" << timestamp() << "\033[0m  " << jobId << "  \033[31mfailed\033[0m  " << std::fixed << std::setprecision(1) << elapsed << "s\n" << std::flush;
-            }
+            printJobStatus(jobId, "failed", elapsed);
             if (finalizeFailure(jobId, result.error)) {
-                writeCompletionMeta(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
+                completeJob(getJobPath("failed", jobId), elapsed, {"error.txt"}, "failed");
             }
             LOG_WARN("Job failed during inference: " + jobId + " - " + result.error);
             return ProcessResult::Failed;

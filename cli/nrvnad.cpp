@@ -373,14 +373,7 @@ int main(int argc, char * argv[]) {
     std::cout << "  Loading " << modelName << "\n" << std::flush;
 
     try {
-        std::unique_ptr<Server> server;
-        if (!vocoderPath.empty()) {
-            server = std::make_unique<Server>(modelPath, mmprojPath, vocoderPath, workspace, workers);
-        } else if (!mmprojPath.empty()) {
-            server = std::make_unique<Server>(modelPath, mmprojPath, workspace, workers);
-        } else {
-            server = std::make_unique<Server>(modelPath, workspace, workers);
-        }
+        auto server = std::make_unique<Server>(modelPath, workspace, workers, mmprojPath, vocoderPath);
 
         if (!server->start()) {
             std::cout << "  \033[31mFailed to start\033[0m\n";

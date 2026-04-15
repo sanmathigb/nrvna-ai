@@ -49,11 +49,10 @@ public:
     Work(Work&&) noexcept = default;
     Work& operator=(Work&&) noexcept = default;
 
-    [[nodiscard]] SubmitResult submit(const std::string& prompt, JobType type = JobType::Text);
-    [[nodiscard]] SubmitResult submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths);
-    [[nodiscard]] SubmitResult submit(const std::string& prompt, JobType type, const SubmitOptions& opts);
-    [[nodiscard]] SubmitResult submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, const SubmitOptions& opts);
-    [[nodiscard]] SubmitResult submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, JobType type, const SubmitOptions& opts);
+    [[nodiscard]] SubmitResult submit(const std::string& prompt,
+                                      JobType type = JobType::Text,
+                                      const std::vector<std::filesystem::path>& imagePaths = {},
+                                      const SubmitOptions& opts = {});
 
     void setMaxSize(std::size_t maxBytes) noexcept { maxBytes_ = maxBytes; }
     [[nodiscard]] std::size_t maxSize() const noexcept { return maxBytes_; }

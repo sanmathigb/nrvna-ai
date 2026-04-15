@@ -136,24 +136,20 @@ std::optional<Job> Flow::get(const JobId& id) const noexcept {
 std::vector<Job> Flow::list(std::size_t max) const noexcept {
     std::vector<Job> jobs;
     try {
-        auto outputDir = workspace_ / "output";
-        if (std::filesystem::exists(outputDir)) {
-            for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
-                if (entry.is_directory()) {
-                    auto timestamp = std::filesystem::last_write_time(entry);
-                    auto sctp = toSystemTime(timestamp);
-                    jobs.push_back({entry.path().filename().string(), Status::Done, "", sctp});
-                }
-            }
-        }
+        const std::pair<std::filesystem::path, Status> dirs[] = {
+            {workspace_ / "output",          Status::Done},
+            {workspace_ / "failed",          Status::Failed},
+            {workspace_ / "processing",      Status::Running},
+            {workspace_ / "input" / "ready", Status::Queued},
+        };
 
-        auto failedDir = workspace_ / "failed";
-        if (std::filesystem::exists(failedDir)) {
-            for (const auto& entry : std::filesystem::directory_iterator(failedDir)) {
+        for (const auto& [dir, status] : dirs) {
+            if (!std::filesystem::exists(dir)) continue;
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
                 if (entry.is_directory()) {
-                    auto timestamp = std::filesystem::last_write_time(entry);
-                    auto sctp = toSystemTime(timestamp);
-                    jobs.push_back({entry.path().filename().string(), Status::Failed, "", sctp});
+                    auto ts = std::filesystem::last_write_time(entry);
+                    auto sctp = toSystemTime(ts);
+                    jobs.push_back({entry.path().filename().string(), status, "", sctp});
                 }
             }
         }

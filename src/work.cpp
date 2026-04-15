@@ -97,65 +97,7 @@ Work::Work(const std::filesystem::path& workspace, bool createIfMissing)
     }
 }
 
-SubmitResult Work::submit(const std::string& prompt, JobType type) {
-    return submit(prompt, type, SubmitOptions{});
-}
-
-SubmitResult Work::submit(const std::string& prompt, JobType type, const SubmitOptions& opts) {
-    if (!isValidPrompt(prompt)) {
-        if (prompt.empty()) {
-            LOG_DEBUG("Invalid prompt: empty");
-            return {false, "", SubmissionError::InvalidContent, "Prompt is empty"};
-        } else {
-            LOG_DEBUG("Prompt exceeds size limit: " + std::to_string(prompt.size()) + " > " + std::to_string(maxBytes_));
-            return {false, "", SubmissionError::InvalidSize, "Prompt exceeds maximum size limit (" + std::to_string(maxBytes_) + " bytes)"};
-        }
-    }
-
-    JobId jobId = generateId();
-    LOG_DEBUG("Generated job ID: " + jobId);
-
-    if (!createJobDirectory(jobId)) {
-        LOG_ERROR("Failed to create job directory for: " + jobId);
-        return {false, "", SubmissionError::IoError, "Failed to create job directory"};
-    }
-
-    if (!writePromptFile(jobId, prompt)) {
-        LOG_ERROR("Failed to write prompt file for: " + jobId);
-        cleanupFailedJob(jobId);
-        return {false, "", SubmissionError::IoError, "Failed to write prompt file"};
-    }
-
-    if (type != JobType::Text && !writeTypeFile(jobId, type)) {
-        LOG_ERROR("Failed to write type file for: " + jobId);
-        cleanupFailedJob(jobId);
-        return {false, "", SubmissionError::IoError, "Failed to write type file"};
-    }
-
-    if (!writeMetaFile(jobId, type, opts)) {
-        LOG_WARN("Failed to write meta.json for: " + jobId + " (non-fatal)");
-    }
-
-    if (!atomicPublish(jobId)) {
-        LOG_ERROR("Failed to publish job: " + jobId);
-        cleanupFailedJob(jobId);
-        return {false, "", SubmissionError::IoError, "Failed to publish job"};
-    }
-
-    LOG_INFO("Job submitted successfully: " + jobId);
-    return {true, jobId, SubmissionError::None, ""};
-}
-
-SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths) {
-    return submit(prompt, imagePaths, SubmitOptions{});
-}
-
-SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, const SubmitOptions& opts) {
-    JobType type = imagePaths.empty() ? JobType::Text : JobType::Vision;
-    return submit(prompt, imagePaths, type, opts);
-}
-
-SubmitResult Work::submit(const std::string& prompt, const std::vector<std::filesystem::path>& imagePaths, JobType type, const SubmitOptions& opts) {
+SubmitResult Work::submit(const std::string& prompt, JobType type, const std::vector<std::filesystem::path>& imagePaths, const SubmitOptions& opts) {
     const bool allowEmptyPrompt = type == JobType::Embed && !imagePaths.empty();
     if ((!allowEmptyPrompt && !isValidPrompt(prompt)) || (allowEmptyPrompt && prompt.size() > maxBytes_)) {
         if (prompt.empty()) {

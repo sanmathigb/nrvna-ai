@@ -13,8 +13,6 @@
 
 namespace nrvnaai {
 
-namespace {
-
 std::string escapeJson(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 16);
@@ -30,6 +28,8 @@ std::string escapeJson(const std::string& s) {
     }
     return out;
 }
+
+namespace {
 
 std::string unescapeJson(const std::string& s) {
     std::string out;

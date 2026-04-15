@@ -109,7 +109,6 @@ private:
     std::vector<mtmd_bitmap*> loadImages(const std::vector<std::filesystem::path>& imagePaths) const;
     void freeBitmaps(std::vector<mtmd_bitmap*>& bitmaps) const noexcept;
 
-    llama_context* context_ = nullptr;
     mtmd_context* mtmd_ctx_ = nullptr;
 
     // Shared chat templates (initialized once at model load, like shared_model_)

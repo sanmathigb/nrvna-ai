@@ -14,7 +14,6 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
-#include <regex>
 
 namespace nrvnaai {
 
@@ -278,10 +277,6 @@ Runner::Runner(const std::string& modelPath, const std::string& mmprojPath, int 
 }
 
 Runner::~Runner() {
-    if (context_) {
-        llama_free(context_);
-        context_ = nullptr;
-    }
     // chat_templates_ is static/shared — freed on model replacement, not per-instance
 }
 
@@ -300,7 +295,11 @@ Runner::SamplingConfig Runner::buildSamplingConfig() const {
     config.seed = static_cast<uint32_t>(env_int("NRVNA_SEED", 0));
 
     config.max_ctx = std::min(n_ctx_train, env_int("NRVNA_MAX_CTX", 8192));
-    config.n_predict = env_int("NRVNA_PREDICT", 2048);
+    int n_predict = env_int("NRVNA_PREDICT", 2048);
+    if (n_predict == 2048) {
+        n_predict = env_int("NRVNA_N_PREDICT", 2048);
+    }
+    config.n_predict = n_predict;
 
     LOG_INFO("Model context: " + std::to_string(n_ctx_train) +
              ", using max_ctx=" + std::to_string(config.max_ctx) +
@@ -591,8 +590,8 @@ RunResult Runner::runText(const std::string& prompt) {
 
         llama_context_params ctx_params;
         buildContextParams(n_prompt, config, ctx_params);
-        context_ = llama_init_from_model(shared_model_.get(), ctx_params);
-        if (!context_) {
+        llama_context* ctx = llama_init_from_model(shared_model_.get(), ctx_params);
+        if (!ctx) {
             return {false, "", "Failed to create context"};
         }
 
@@ -603,11 +602,10 @@ RunResult Runner::runText(const std::string& prompt) {
         llama_token decoder_start_token_id = 0;
         if (llama_model_has_encoder(shared_model_.get())) {
             llama_batch enc_batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-            if (llama_encode(context_, enc_batch)) {
+            if (llama_encode(ctx, enc_batch)) {
                 LOG_ERROR("Failed to encode");
                 llama_sampler_free(smpl);
-                llama_free(context_);
-                context_ = nullptr;
+                llama_free(ctx);
                 return {false, "", "Failed to encode"};
             }
 
@@ -623,11 +621,10 @@ RunResult Runner::runText(const std::string& prompt) {
         if (decoder_start_token_id != 0) {
             // Encoder model: decode the start token
             llama_batch start_batch = llama_batch_get_one(&decoder_start_token_id, 1);
-            if (llama_decode(context_, start_batch)) {
+            if (llama_decode(ctx, start_batch)) {
                 LOG_ERROR("Failed to decode start token");
                 llama_sampler_free(smpl);
-                llama_free(context_);
-                context_ = nullptr;
+                llama_free(ctx);
                 return {false, "", "Failed to decode start token"};
             }
         } else {
@@ -635,11 +632,10 @@ RunResult Runner::runText(const std::string& prompt) {
             for (int i = 0; i < n_prompt; i += n_batch) {
                 int n_eval = std::min(n_batch, n_prompt - i);
                 llama_batch batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
-                if (llama_decode(context_, batch)) {
+                if (llama_decode(ctx, batch)) {
                     LOG_ERROR("Failed to decode prompt chunk");
                     llama_sampler_free(smpl);
-                    llama_free(context_);
-                    context_ = nullptr;
+                    llama_free(ctx);
                     return {false, "", "Failed to decode prompt"};
                 }
             }
@@ -650,7 +646,7 @@ RunResult Runner::runText(const std::string& prompt) {
 
         int generated = 0;
         for (; generated < config.n_predict; ) {
-            new_token_id = llama_sampler_sample(smpl, context_, -1);
+            new_token_id = llama_sampler_sample(smpl, ctx, -1);
             llama_sampler_accept(smpl, new_token_id);
 
             if (llama_vocab_is_eog(vocab, new_token_id)) {
@@ -663,11 +659,11 @@ RunResult Runner::runText(const std::string& prompt) {
                 LOG_ERROR("Failed to convert token to piece");
                 break;
             }
-            
+
             output.append(buf, n);
 
             llama_batch gen_batch = llama_batch_get_one(&new_token_id, 1);
-            if (llama_decode(context_, gen_batch)) {
+            if (llama_decode(ctx, gen_batch)) {
                 LOG_ERROR("Failed to decode generated token");
                 break;
             }
@@ -675,21 +671,16 @@ RunResult Runner::runText(const std::string& prompt) {
         }
 
         llama_sampler_free(smpl);
-        llama_free(context_);
-        context_ = nullptr;
-        
+        llama_free(ctx);
+
         LOG_INFO("Generated " + std::to_string(output.size()) + " bytes");
         output = stripThinkBlocks(output);
         return {true, output, ""};
-        
+
     } catch (const std::exception& e) {
         if (smpl) {
             llama_sampler_free(smpl);
             smpl = nullptr;
-        }
-        if (context_) {
-            llama_free(context_);
-            context_ = nullptr;
         }
         LOG_ERROR("Inference error: " + std::string(e.what()));
         return {false, "", "Inference error: " + std::string(e.what())};
@@ -756,8 +747,8 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
         }
         llama_context_params ctx_params;
         buildContextParams(static_cast<int>(n_prompt), config, ctx_params);
-        context_ = llama_init_from_model(shared_model_.get(), ctx_params);
-        if (!context_) {
+        llama_context* ctx = llama_init_from_model(shared_model_.get(), ctx_params);
+        if (!ctx) {
             mtmd_input_chunks_free(chunks);
             freeBitmaps(bitmaps);
             return {false, "", "Failed to create context"};
@@ -772,10 +763,9 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
         auto encodeStart = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> vision_lock(vision_encoding_mutex_);
-            if (mtmd_helper_eval_chunks(mtmd_ctx_, context_, chunks, 0, 0, ctx_params.n_batch, true, &n_past) != 0) {
+            if (mtmd_helper_eval_chunks(mtmd_ctx_, ctx, chunks, 0, 0, ctx_params.n_batch, true, &n_past) != 0) {
                 llama_sampler_free(smpl);
-                llama_free(context_);
-                context_ = nullptr;
+                llama_free(ctx);
                 mtmd_input_chunks_free(chunks);
                 freeBitmaps(bitmaps);
                 return {false, "", "Failed to eval multimodal prompt"};
@@ -795,7 +785,7 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
         llama_batch batch = llama_batch_init(1, 0, 1);
 
         for (int i = 0; i < config.n_predict; ++i) {
-            new_token_id = llama_sampler_sample(smpl, context_, -1);
+            new_token_id = llama_sampler_sample(smpl, ctx, -1);
             llama_sampler_accept(smpl, new_token_id);
 
             if (llama_vocab_is_eog(vocab, new_token_id)) {
@@ -817,7 +807,7 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
             batch.seq_id[0][0] = 0;
             batch.logits[0] = true;
 
-            if (llama_decode(context_, batch)) {
+            if (llama_decode(ctx, batch)) {
                 break;
             }
         }
@@ -825,18 +815,13 @@ RunResult Runner::runVision(const std::string& prompt, const std::vector<std::fi
         llama_batch_free(batch);
 
         llama_sampler_free(smpl);
-        llama_free(context_);
-        context_ = nullptr;
+        llama_free(ctx);
 
         LOG_INFO("Generated " + std::to_string(output.size()) + " bytes before strip");
         output = stripThinkBlocks(output);
         return {true, output, ""};
 
     } catch (const std::exception& e) {
-        if (context_) {
-            llama_free(context_);
-            context_ = nullptr;
-        }
         return {false, "", "Multimodal inference error: " + std::string(e.what())};
     }
 }

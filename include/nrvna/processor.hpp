@@ -26,9 +26,10 @@ enum class ProcessResult : uint8_t {
 
 class Processor {
 public:
-    explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath);
-    explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath);
-    explicit Processor(const std::filesystem::path& workspace, const std::string& modelPath, const std::string& mmprojPath, const std::string& vocoderPath);
+    explicit Processor(const std::filesystem::path& workspace,
+                       const std::string& modelPath,
+                       const std::string& mmprojPath = "",
+                       const std::string& vocoderPath = "");
     
     Processor(const Processor&) = delete;
     Processor& operator=(const Processor&) = delete;

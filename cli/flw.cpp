@@ -5,6 +5,7 @@
  */
 
 #include "nrvna/flow.hpp"
+#include "nrvna/meta.hpp"
 #include "nrvna/logger.hpp"
 #include <fstream>
 #include <iostream>
@@ -41,22 +42,6 @@ void printUsage(const char* progName) {
     std::cout << "  " << progName << " ./ws --json               Status as JSON\n";
     std::cout << "  " << progName << " ./ws -w <job_id>          Wait and print result\n";
     std::cout << "  wrk ./ws \"Hello\" | " << progName << " ./ws -w   Submit and collect\n";
-}
-
-std::string escapeJson(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 16);
-    for (char c : s) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default: out += c; break;
-        }
-    }
-    return out;
 }
 
 std::string readFileRaw(const std::filesystem::path& path) {
@@ -162,7 +147,7 @@ int main(int argc, char* argv[]) {
             if (!recentJobs.empty()) {
                 std::cout << "\nrecent:\n";
                 for (const auto& job : recentJobs) {
-                    const char* tag = job.status == Status::Failed ? "failed" : "done";
+                    const char* tag = statusToJsonString(job.status);
                     auto m = flow.meta(job.id);
                     if (m && m->duration_s >= 0.0) {
                         char dur[16];

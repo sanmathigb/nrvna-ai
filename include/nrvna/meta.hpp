@@ -32,5 +32,6 @@ std::optional<JobMeta> readMetaJson(const std::filesystem::path& dir);
 
 std::string formatTimestamp();
 std::string jobTypeToString(JobType type);
+std::string escapeJson(const std::string& s);
 
 } // namespace nrvnaai

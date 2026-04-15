@@ -20,23 +20,10 @@ namespace nrvnaai {
 
 // Note: Signal handling is done by the CLI (nrvnad.cpp), not by Server class
 
-Server::Server(const std::string& modelPath, const std::filesystem::path& workspace, int workers)
-    : modelPath_(modelPath), mmprojPath_(""), workspace_(workspace), workers_(workers) {
-    LOG_DEBUG("Server created - model: " + modelPath + ", workspace: " + workspace_.string() +
-              ", workers: " + std::to_string(workers));
-}
-
-Server::Server(const std::string& modelPath, const std::string& mmprojPath,
-               const std::filesystem::path& workspace, int workers)
-    : modelPath_(modelPath), mmprojPath_(mmprojPath), workspace_(workspace), workers_(workers) {
-    LOG_DEBUG("Server created - model: " + modelPath + ", mmproj: " + mmprojPath + ", workspace: " + workspace_.string() +
-              ", workers: " + std::to_string(workers));
-}
-
-Server::Server(const std::string& modelPath, const std::string& mmprojPath,
-               const std::string& vocoderPath, const std::filesystem::path& workspace, int workers)
+Server::Server(const std::string& modelPath, const std::filesystem::path& workspace, int workers,
+               const std::string& mmprojPath, const std::string& vocoderPath)
     : modelPath_(modelPath), mmprojPath_(mmprojPath), vocoderPath_(vocoderPath), workspace_(workspace), workers_(workers) {
-    LOG_DEBUG("Server created - model: " + modelPath + ", vocoder: " + vocoderPath + ", workspace: " + workspace_.string() +
+    LOG_DEBUG("Server created - model: " + modelPath + ", workspace: " + workspace_.string() +
               ", workers: " + std::to_string(workers));
 }
 
@@ -87,13 +74,7 @@ bool Server::start() {
     try {
         scanner_ = std::make_unique<Scanner>(workspace_);
         pool_ = std::make_unique<Pool>(workers_);
-        if (!vocoderPath_.empty()) {
-            processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_, vocoderPath_);
-        } else if (!mmprojPath_.empty()) {
-            processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_);
-        } else {
-            processor_ = std::make_unique<Processor>(workspace_, modelPath_);
-        }
+        processor_ = std::make_unique<Processor>(workspace_, modelPath_, mmprojPath_, vocoderPath_);
 
         // Pre-initialize all Runners BEFORE starting worker threads
         LOG_DEBUG("Pre-initializing " + std::to_string(workers_) + " Runner instances...");
