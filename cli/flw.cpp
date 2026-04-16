@@ -27,6 +27,7 @@ void printUsage(const char* progName) {
     std::cout << "  job_id        Specific job ID to retrieve (optional)\n\n";
     std::cout << "Options:\n";
     std::cout << "  -w, --wait    Wait for job to complete before returning\n";
+    std::cout << "  -W, --wait-idle Wait for workspace to be idle (all jobs done)\n";
     std::cout << "  --json        Output structured JSON\n";
     std::cout << "  -h, --help    Show this help message\n";
     std::cout << "  -v, --version Show version\n\n";
@@ -98,6 +99,7 @@ int main(int argc, char* argv[]) {
     std::string workspace = argv[1];
     std::string jobId = "";
     bool wait = false;
+    bool waitIdle = false;
     bool json = false;
     
     // Parse args
@@ -105,6 +107,8 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if (arg == "-w" || arg == "--wait") {
             wait = true;
+        } else if (arg == "--wait-idle" || arg == "-W") {
+            waitIdle = true;
         } else if (arg == "--json") {
             json = true;
         } else {
@@ -125,6 +129,26 @@ int main(int argc, char* argv[]) {
 
     try {
         Flow flow(workspace);
+
+        // Wait for workspace idle
+        if (waitIdle) {
+            while (true) {
+                auto c = flow.counts();
+                if (c.queued == 0 && c.running == 0) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            if (json) {
+                auto c = flow.counts();
+                std::cout << "{\"queued\":" << c.queued
+                          << ",\"running\":" << c.running
+                          << ",\"done\":" << c.done
+                          << ",\"failed\":" << c.failed << "}\n";
+                return c.failed > 0 ? 1 : 0;
+            }
+            auto c = flow.counts();
+            std::cout << "idle (" << c.done << " done, " << c.failed << " failed)\n";
+            return c.failed > 0 ? 1 : 0;
+        }
 
         // No job ID and no pipe: show workspace status
         if (jobId.empty() && !wait) {
